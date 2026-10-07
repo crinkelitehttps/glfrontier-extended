@@ -36,7 +36,7 @@
 * CALLING THE HOST (C code in src/)
 *   'hcall #Call_Name' calls hcalls[n] in src/hostcall.c, which reads the
 *   68k registers with GetReg/SetReg and RAM with rdbyte etc.
-*   Free numbers: $2a-$5f and $7b upwards ($7a: cockpit view) ($28-$29: mods framework). To add one: an equ below, an
+*   Free numbers: $2a-$5f and $7f upwards ($7a-$7d: cockpit view, $7e: strafing) ($28-$29: mods framework). To add one: an equ below, an
 *   entry in hcalls[] and the C function. This is the easy way to write
 *   big features (cameras, new UI) in C while the game logic stays here.
 *
@@ -142,6 +142,8 @@ Nu_AtmosBand		equ	$7b
 Nu_ComplexNearCurve	equ	$7c
 * Cockpit view: a pass's background is drawn (src/gl/gl_cockpit.c)
 Call_CockpitBackground	equ	$7d
+* Strafing: the player's sideways / vertical thrust (src/strafe.c)
+Call_Strafe		equ	$7e
 
 * don't change. it won't work yet.
 SCR_W			equ	320
@@ -41374,9 +41376,12 @@ L627ac:
 		beq.s	l6280c
 		btst	#$0,A6_plr_flight_flags(a6)
 		bne.s	l6283c
-		move.l	A6_plr_speed_set(a6),d6
-		jsr	708(a5)
-		jmp	726(a5)
+* Strafing: hook, same size as the code it replaced (12 bytes). See
+* Lstrafe_speed at the end of the file.
+		jmp	Lstrafe_speed
+		nop
+		nop
+		nop
 	l6280c:	moveq	#0,d0
 		move.l	#$884,d1
 		moveq	#0,d2
@@ -41394,13 +41399,17 @@ L6281a:
 		move.w	d0,144(a0)
 		bra.s	l62852
 
-	l6283c:	moveq	#0,d0
-		move.l	d0,140(a0)
-		move.w	d0,144(a0)
-		tst.b	A6_keystate_return(a6)
-		bne.s	l62864
-		tst.b	A6_keystate_rshift(a6)
-		bne.s	l6286a
+* Strafing: hook, same size as the code it replaced (22 bytes). See
+* Lstrafe_manual at the end of the file.
+	l6283c:	jsr	Lstrafe_manual
+		beq.s	l62852
+		rts
+		nop
+		nop
+		nop
+		nop
+		nop
+		nop
 	l62852:	bclr	#$7,673(a6)
 		beq.s	l62862
 		moveq	#1,d1
@@ -67255,4 +67264,48 @@ Lcockpit_discard:
 		addq.l	#4,a7
 		jmp	L3b78e
 lcockpit_discard_keep:
+		rts
+
+******************************************************************************
+* Strafing: sideways and vertical thrust from the player.
+*
+* A ship's thrust is a vector in its own axes (140-144(a0): x, y, z), set
+* through 726(a5), which clamps each axis to the ship's limits (146-156(a0);
+* x and y are as strong as the retros). The game only fires x and y itself:
+* the flight computer cancelling drift, and lift-off. These hooks give the
+* player x and y thrust too, from the host (src/strafe.c).
+*
+* hcall Call_Strafe: a0 = the player's ship, d0-d2 = the thrust about to be
+* set. Replaces d0 / d1 on the axes the player is strafing along, so in set
+* speed mode the strafe overrides the flight computer on those axes, which
+* takes the sideways drift out again once the strafe is let go.
+******************************************************************************
+* Set speed (flight computer): in place of l627f0's tail.
+Lstrafe_speed:
+		move.l	A6_plr_speed_set(a6),d6
+		jsr	708(a5)
+		hcall	#Call_Strafe
+		jmp	726(a5)
+
+* Manual thrust: in place of l6283c's start. Main / retro thrust from
+* Return / Right Shift as before, plus the strafe. Returns Z set when there
+* is no thrust at all, for the game's own path for no keys held.
+Lstrafe_manual:
+		moveq	#0,d2
+		tst.b	A6_keystate_return(a6)
+		bne.s	lstrafe_main
+		tst.b	A6_keystate_rshift(a6)
+		beq.s	lstrafe_set
+		move.l	#$ffff8000,d2
+		bra.s	lstrafe_set
+lstrafe_main:
+		move.w	#$7fff,d2
+lstrafe_set:
+		moveq	#0,d0
+		moveq	#0,d1
+		hcall	#Call_Strafe
+		jsr	726(a5)
+		movem.w	140(a0),d0-2
+		or.w	d1,d0
+		or.w	d2,d0
 		rts

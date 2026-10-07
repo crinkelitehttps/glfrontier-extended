@@ -22,6 +22,7 @@
 #include "renderer.h"
 #include "screen_text.h"
 #include "shortcut.h"
+#include "strafe.h"
 
 /* D0.b = exception number, A0 = handler */
 static void SetExceptionHandler(void)
@@ -140,5 +141,6 @@ HOSTCALL hcalls[] = {
 	[0x7b] = Nu_AtmosBand,
 	[0x7c] = Nu_ComplexNearCurve,
 	[0x7d] = Call_CockpitBackground,
+	[0x7e] = Call_Strafe,
 };
 const int hcalls_count = sizeof(hcalls) / sizeof(hcalls[0]);

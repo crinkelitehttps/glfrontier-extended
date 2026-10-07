@@ -364,5 +364,7 @@
 #define FE2_Lcockpit_curve                           0xa8fda /* Lcockpit_curve */
 #define FE2_Lcockpit_curve_from                      0xa901a /* Lcockpit_curve_from */
 #define FE2_Lcockpit_discard                         0xa9034 /* Lcockpit_discard */
+#define FE2_Lstrafe_speed                            0xa904c /* Lstrafe_speed */
+#define FE2_Lstrafe_manual                           0xa905c /* Lstrafe_manual */
 
 #endif /* FE2_LABELS_H */

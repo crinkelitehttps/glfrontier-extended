@@ -15,6 +15,7 @@
 #include "host.h"
 #include "keymap.h"
 #include "main.h"
+#include "strafe.h"
 
 /* The built-in bindings, also written out as gamepad.cfg */
 static const char DEFAULT_CFG[] =
@@ -29,8 +30,9 @@ static const char DEFAULT_CFG[] =
 	"# Shift layers: a control bound to `shift1` or `shift2` is held to switch\n"
 	"# key bindings to the ones prefixed with that shift (and off the\n"
 	"# unprefixed ones). Holding both reaches neither. The layer counts when a\n"
-	"# control is pressed. Axis bindings (steer, look) act whatever the shifts,\n"
-	"# unless the axis has one prefixed with the shift being held.\n"
+	"# control is pressed. Axis bindings (steer, look, strafe-x/y) act\n"
+	"# whatever the shifts, unless the axis has one prefixed with the shift\n"
+	"# being held.\n"
 	"#\n"
 	"# Controls (SDL names):\n"
 	"#   buttons   a b x y back guide start leftstick rightstick\n"
@@ -44,6 +46,9 @@ static const char DEFAULT_CFG[] =
 	"#   steer-x, steer-y [invert]  the ship's steering (full axes only):\n"
 	"#                              x turns (rolls with Elite controls), y pitches\n"
 	"#   look-x, look-y [invert]    look around in the cockpit (springs back)\n"
+	"#   strafe-x, strafe-y [invert] sideways / vertical thrust (full axes;\n"
+	"#                              x right +, y up +, so lefty wants invert)\n"
+	"#   strafe left|right|up|down  the same, full thrust while held\n"
 	"#   key <key>                  a keyboard key while held, with optional\n"
 	"#                              modifiers: shift+f1, ctrl+k\n"
 	"#   cycle <key> <key> ...      each press sends the next key in turn\n"
@@ -79,8 +84,12 @@ static const char DEFAULT_CFG[] =
 	"start          key escape          # pause\n"
 	"back           recenter            # head tracking: this pose is straight ahead\n"
 	"rightstick     recenter\n"
-	"dpup           key =               # zoom in (maps, external view)\n"
-	"dpdown         key -               # zoom out\n"
+	"dpleft         strafe left         # sideways / vertical thrust (hold)\n"
+	"dpright        strafe right\n"
+	"dpup           strafe up\n"
+	"dpdown         strafe down\n"
+	"x              key =               # zoom in (maps, external view)\n"
+	"leftstick      key -               # zoom out\n"
 	"\n"
 	"# ---- Left shoulder held: the console's function keys, laid out like\n"
 	"# the panel (F1-F4 on the left, F6-F10 on the right)\n"
@@ -126,6 +135,9 @@ typedef enum
 	ACT_STEER_Y,
 	ACT_LOOK_X,
 	ACT_LOOK_Y,
+	ACT_STRAFE_X,
+	ACT_STRAFE_Y,
+	ACT_STRAFE, /* a button: strafe_axis, strafe_sign */
 	ACT_KEY,
 	ACT_CYCLE,
 	ACT_SHIFT,
@@ -146,11 +158,13 @@ typedef struct
 	Control control;
 	Action action;
 	bool invert;
+	int strafe_axis;   /* strafe: 0 x, 1 y */
+	float strafe_sign; /* strafe: -1 / +1 */
 	Chord keys[MAX_CHORDS];
 	int n_keys;
 	int step;  /* cycle: the next key */
-	int layer; /* key, cycle, recenter, cockpit, steer, look: shift layer (0 none, 1, 2); shift: which */
-	int axis_shadowed; /* steer / look without a layer: bit n set if shift n has its own binding */
+	int layer; /* key, cycle, recenter, cockpit, steer, look, strafe: shift layer (0 none, 1, 2); shift: which */
+	int axis_shadowed; /* steer / look / strafe-x / strafe-y without a layer: bit n set if shift n has its own binding */
 
 	bool was_down;  /* the control, last update */
 	bool held;      /* key: sent down */
@@ -262,7 +276,8 @@ static int split(char *line, char **words, int max)
 
 static bool is_axis_action(Action a)
 {
-	return a == ACT_STEER_X || a == ACT_STEER_Y || a == ACT_LOOK_X || a == ACT_LOOK_Y;
+	return a == ACT_STEER_X || a == ACT_STEER_Y || a == ACT_LOOK_X || a == ACT_LOOK_Y || a == ACT_STRAFE_X ||
+		   a == ACT_STRAFE_Y;
 }
 
 static bool parse_line(char *line, const char *source, int line_no)
@@ -307,18 +322,36 @@ static bool parse_line(char *line, const char *source, int line_no)
 	int args = i + 2;
 	bool full_axis = b.control.source == SRC_AXIS && b.control.half == 0;
 
-	if (!strcmp(act, "steer-x") || !strcmp(act, "steer-y") || !strcmp(act, "look-x") || !strcmp(act, "look-y"))
+	if (!strcmp(act, "steer-x") || !strcmp(act, "steer-y") || !strcmp(act, "look-x") || !strcmp(act, "look-y") ||
+		!strcmp(act, "strafe-x") || !strcmp(act, "strafe-y"))
 	{
-		b.action = !strcmp(act, "steer-x")	 ? ACT_STEER_X
-				   : !strcmp(act, "steer-y") ? ACT_STEER_Y
-				   : !strcmp(act, "look-x")	 ? ACT_LOOK_X
-											 : ACT_LOOK_Y;
+		b.action = !strcmp(act, "steer-x")	  ? ACT_STEER_X
+				   : !strcmp(act, "steer-y")  ? ACT_STEER_Y
+				   : !strcmp(act, "look-x")	  ? ACT_LOOK_X
+				   : !strcmp(act, "look-y")	  ? ACT_LOOK_Y
+				   : !strcmp(act, "strafe-x") ? ACT_STRAFE_X
+											  : ACT_STRAFE_Y;
 		if (!full_axis)
 		{
 			log_printf("%s:%d: %s needs a full axis\n", source, line_no, act);
 			return false;
 		}
 		b.invert = args < n && !strcmp(w[args], "invert");
+	}
+	else if (!strcmp(act, "strafe"))
+	{
+		static const char *const dirs[] = {"left", "right", "down", "up"};
+		int d = 0;
+		while (d < 4 && (args >= n || strcmp(w[args], dirs[d])))
+			d++;
+		if (d == 4)
+		{
+			log_printf("%s:%d: strafe takes left, right, up or down\n", source, line_no);
+			return false;
+		}
+		b.action = ACT_STRAFE;
+		b.strafe_axis = d / 2;
+		b.strafe_sign = d % 2 ? 1.0f : -1.0f;
 	}
 	else if (!strcmp(act, "key") || !strcmp(act, "cycle"))
 	{
@@ -593,12 +626,13 @@ static void write_steering(float x, float y)
 
 void gamepad_update(void)
 {
-	float steer[2] = {0, 0};
+	float steer[2] = {0, 0}, strafe[2] = {0, 0};
 	look[0] = look[1] = 0;
 	if (!pad)
 	{
 		release_all();
 		write_steering(0, 0);
+		strafe_set_pad(0, 0);
 		return;
 	}
 
@@ -625,6 +659,12 @@ void gamepad_update(void)
 			case ACT_LOOK_X:
 				look[0] += v;
 				break;
+			case ACT_STRAFE_X:
+				strafe[0] += v;
+				break;
+			case ACT_STRAFE_Y:
+				strafe[1] += v;
+				break;
 			default:
 				look[1] += v;
 				break;
@@ -637,6 +677,12 @@ void gamepad_update(void)
 		b->was_down = down;
 		if (b->action == ACT_SHIFT)
 			continue;
+		if (b->action == ACT_STRAFE)
+		{
+			if (down && b->layer == layer)
+				strafe[b->strafe_axis] += b->strafe_sign;
+			continue;
+		}
 
 		if (b->held && !down)
 		{
@@ -670,8 +716,10 @@ void gamepad_update(void)
 	{
 		steer[i] = fmaxf(-1.0f, fminf(1.0f, steer[i]));
 		look[i] = fmaxf(-1.0f, fminf(1.0f, look[i]));
+		strafe[i] = fmaxf(-1.0f, fminf(1.0f, strafe[i]));
 	}
 	write_steering(steer[0], steer[1]);
+	strafe_set_pad(strafe[0], strafe[1]);
 }
 
 void gamepad_look(float *x, float *y)
