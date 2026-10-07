@@ -4,6 +4,7 @@
  */
 #include <string.h>
 
+#include "gl_cockpit.h"
 #include "gl_scene.h"
 #include "main.h"
 #include "m68000.h"
@@ -11,6 +12,7 @@
 
 #define SCENE_DATA_SIZE (1 << 20) /* bytes of records per frame */
 #define SCENE_MAX_NODES 4096
+#define SCENE_MAX_PASSES (COCKPIT_MAX_PASSES + 1)
 
 typedef struct
 {
@@ -32,6 +34,21 @@ static ZNode nodes[SCENE_MAX_NODES];
 static int n_nodes;
 static int cur_node = -1; /* -1: no node, records are dropped */
 static bool node_locked;
+
+/* Pass 0 is the frame's ordinary drawing. More passes are the world drawn
+ * again with the camera turned (cockpit_pass_* in gl_cockpit.c), each its
+ * own depth tree. */
+typedef struct
+{
+	int root; /* -1 until the pass's first node */
+	int id;   /* the cockpit's id for it */
+} Pass;
+static Pass passes[SCENE_MAX_PASSES] = {{-1, -1}};
+static int n_passes = 1, cur_pass;
+
+/* Soft node records not captured yet (offsets of their payloads) */
+static uint32_t soft_pending[SCENE_MAX_NODES];
+static int n_soft_pending;
 
 typedef void (*PrimDrawFn)(const void *);
 static const PrimDrawFn draw_table[PRIM_COUNT] = {NULL,
@@ -76,6 +93,12 @@ void scene_reset(void)
 	n_nodes = 0;
 	cur_node = -1;
 	node_locked = false;
+	passes[0].root = -1;
+	passes[0].id = -1;
+	n_passes = 1;
+	cur_pass = 0;
+	n_soft_pending = 0;
+	soft_nodes_reset();
 }
 
 static void close_current(void)
@@ -95,6 +118,32 @@ static int new_node(uint32_t z)
 	return i;
 }
 
+bool scene_begin_pass(int id)
+{
+	if (!scene_active() || n_passes >= SCENE_MAX_PASSES)
+		return false;
+	close_current();
+	cur_node = -1;
+	cur_pass = n_passes++;
+	passes[cur_pass].root = -1;
+	passes[cur_pass].id = id;
+	return true;
+}
+
+void scene_end_pass(void)
+{
+	close_current();
+	cur_node = -1;
+	cur_pass = 0;
+}
+
+void scene_capture_soft_nodes(void)
+{
+	for (int i = 0; i < n_soft_pending; i++)
+		soft_node_capture((SoftNode *)(data + soft_pending[i]));
+	n_soft_pending = 0;
+}
+
 bool scene_insert_node(uint32_t z)
 {
 	if (!scene_active() || node_locked)
@@ -103,11 +152,16 @@ bool scene_insert_node(uint32_t z)
 	close_current();
 	int n = new_node(z);
 	cur_node = n;
-	if (n <= 0) /* first node is the root, or out of nodes */
-		return n == 0;
+	if (n < 0)
+		return false;
+	if (passes[cur_pass].root < 0) /* the pass's first node is its root */
+	{
+		passes[cur_pass].root = n;
+		return true;
+	}
 
 	/* Iterative BST insert: larger z to `more`, ties to `less` */
-	int i = 0;
+	int i = passes[cur_pass].root;
 	for (;;)
 	{
 		int *next = (z > nodes[i].z) ? &nodes[i].more : &nodes[i].less;
@@ -148,6 +202,8 @@ void *scene_record(enum PrimOp op, size_t size)
 	memset(payload, 0, padded);
 	data_pos += (uint32_t)padded;
 	nodes[cur_node].end = data_pos;
+	if (op == PRIM_SOFT_NODE && n_soft_pending < SCENE_MAX_NODES)
+		soft_pending[n_soft_pending++] = (uint32_t)((unsigned char *)payload - data);
 	return payload;
 }
 
@@ -167,16 +223,15 @@ static void draw_node(const ZNode *n)
 	}
 }
 
-void scene_draw(void)
+static void draw_tree(int root)
 {
-	close_current();
-	if (n_nodes == 0)
+	if (root < 0 || root >= n_nodes)
 		return;
 
 	/* In-order walk, `more` (farther) side first: painter's algorithm */
 	static int stack[SCENE_MAX_NODES];
 	int sp = 0;
-	int i = 0;
+	int i = root;
 	while (i >= 0 || sp > 0)
 	{
 		while (i >= 0)
@@ -187,5 +242,27 @@ void scene_draw(void)
 		i = stack[--sp];
 		draw_node(&nodes[i]);
 		i = nodes[i].less;
+	}
+}
+
+void scene_draw(void)
+{
+	close_current();
+	scene_capture_soft_nodes();
+
+	draw_tree(passes[0].root);
+
+	/* the turned passes, in the cockpit's order: each only where no
+	 * earlier one has drawn */
+	if (n_passes > 1)
+	{
+		for (int k = 0; k < COCKPIT_MAX_PASSES; k++)
+			for (int p = 1; p < n_passes; p++)
+				if (passes[p].id == k && passes[p].root >= 0)
+				{
+					cockpit_pass_draw_begin(k);
+					draw_tree(passes[p].root);
+				}
+		cockpit_pass_draw_end();
 	}
 }

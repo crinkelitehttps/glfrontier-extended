@@ -14,6 +14,14 @@
  *   which also moves with the head's position. Mouse positions are mapped
  *   back through the same surfaces.
  *
+ *   The game itself only draws what is inside its own view (about 64 x 36
+ *   degrees). To show the world all round, the game draws it several times
+ *   a frame with the camera turned (a hook in fe2.s calls Call_CockpitPass
+ *   around each pass): only the directions the head can see this frame,
+ *   from a fixed set that covers the whole sphere. Each pass is its own
+ *   depth tree in gl_scene.c, drawn turned back by its rotation and kept by
+ *   the stencil buffer to its own part of the view.
+ *
  *   Only in the front flight view, when the cockpit is enabled and the free
  *   camera is off; everything else keeps the classic letterboxed layout.
  */
@@ -69,6 +77,17 @@ mat4 cockpit_view_pixel_projection(void);
 
 /* Queues the HUD plane, the cockpit frame and the panel */
 void cockpit_draw(void);
+
+/* Turned passes (see HOW IT WORKS); ids 0 .. COCKPIT_MAX_PASSES-1, 0 is
+ * straight ahead. The host call, d0 = 0 to start and 1 after each pass:
+ * returns d0 = 1 if the game is to draw a pass with the camera at a3. */
+#define COCKPIT_MAX_PASSES 32
+void Call_CockpitPass(void);
+/* True while the game draws a pass other than straight ahead */
+bool cockpit_turned_pass(void);
+/* Replay: draw what follows as pass `id`; then back to normal */
+void cockpit_pass_draw_begin(int id);
+void cockpit_pass_draw_end(void);
 
 /* Window pixel (drawable pixels, y down) -> emulated screen pixel
  * (320x200). False if it points at nothing the game draws on. */

@@ -308,6 +308,7 @@
 #define FE2_star_bmps                                0x792b0 /* L850a4_star_bmps */
 #define FE2_L8ad0e                                   0x7ef0e /* L8ad0e */
 #define FE2_galaxy_bmp                               0x7efc0 /* L8adc0_galaxy_bmp */
+#define FE2_Lcockpit_world                           0x83042 /* Lcockpit_world */
 
 /* Same tables as the named ones in fe2_modded.s */
 #define FE2_elite_rating_points                      0x72f3a /* L7e87a */

@@ -9,6 +9,8 @@
  *                space to eye space, Q (its transpose) back.
  *   view pixels  the game's 2D drawing over its 3D view: x 0..320, y 0..168
  *                downwards, through the classic projection.
+ *   game view    the game's own camera space: x right, y up, z ahead (view
+ *                space with z flipped).
  */
 #include <math.h>
 #include <string.h>
@@ -17,11 +19,14 @@
 #include "gl_cockpit.h"
 #include "gl_draw.h"
 #include "gl_fill2d.h"
+#include "gl_scene.h"
 
 #include "freecam.h"
 #include "gamepad.h"
 #include "game_state.h"
 #include "headtrack.h"
+#include "host.h" /* rdword, wrword */
+#include "m68000.h"
 #include "main.h"
 #include "renderer.h"
 
@@ -58,6 +63,33 @@ static float eye[3];   /* eye position in view space, metres */
 
 /* Panel corners in view space: top left, top right, bottom left, bottom right */
 static float panel[4][3];
+
+/* Turned passes: rings of directions, the game's view turned up by `pitch`
+ * then right by `yaw0` + i * 360 / n. With the view's edges pulled in by
+ * PASS_MARGIN they still cover every direction (checked numerically, with
+ * room to spare down to 0.93). */
+static const struct
+{
+	float pitch, yaw0;
+	int n;
+} RINGS[] = {{0, 0, 6}, {30, 30, 6}, {-30, 30, 6}, {60, 0, 4}, {-60, 0, 4}, {85, 0, 3}, {-85, 0, 3}};
+#define PASS_MARGIN 0.97f
+/* Directions sampled over the window to see which passes it needs */
+#define SAMPLES_X 24
+#define SAMPLES_Y 14
+
+/* Each pass's camera axes (right, up, ahead) in game view coordinates */
+static float pass_axes[COCKPIT_MAX_PASSES][3][3];
+static bool passes_built;
+
+/* This frame's passes in the order the game draws them (ahead last) */
+static int pass_order[COCKPIT_MAX_PASSES];
+static int n_pass_order, pass_step;
+static bool turned;
+static int16_t saved_camera[9];
+
+/* The pass being replayed: its view space -> view space */
+static mat4 pass_rot = {{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1}};
 
 /* =========================================================================
  * Small vector helpers
@@ -182,13 +214,14 @@ static mat4 world_lens(void)
 mat4 cockpit_world_projection(void)
 {
 	mat4 lens = world_lens();
-	return mat4_mul(&lens, &head_view);
+	mat4 view = mat4_mul(&head_view, &pass_rot);
+	return mat4_mul(&lens, &view);
 }
 
 void cockpit_world_split(mat4 *lens, mat4 *head_rotation)
 {
 	*lens = world_lens();
-	*head_rotation = head_view;
+	*head_rotation = mat4_mul(&head_view, &pass_rot);
 }
 
 /* Cockpit geometry: lens with a near plane for things a metre away, head
@@ -394,6 +427,225 @@ void cockpit_draw(void)
 	draw_frame();
 	queue_screen_quad(&cp, (const float(*)[3])panel, PANEL_ROW0, GL_SCREEN_H, false, false);
 	gd_pop();
+}
+
+/* =========================================================================
+ * Turned passes
+ * ========================================================================= */
+static void build_passes(void)
+{
+	int k = 0;
+	for (size_t r = 0; r < sizeof RINGS / sizeof RINGS[0]; r++)
+		for (int i = 0; i < RINGS[r].n && k < COCKPIT_MAX_PASSES; i++, k++)
+		{
+			float yaw = (RINGS[r].yaw0 + 360.0f * (float)i / (float)RINGS[r].n) * GLM_PI / 180.0f;
+			float pitch = RINGS[r].pitch * GLM_PI / 180.0f;
+			float cy = cosf(yaw), sy = sinf(yaw), cp = cosf(pitch), sp = sinf(pitch);
+			float axes[3][3] = {{cy, 0, -sy}, {-sy * sp, cp, -cy * sp}, {sy * cp, sp, cy * cp}};
+			memcpy(pass_axes[k], axes, sizeof axes);
+		}
+	passes_built = true;
+}
+
+/* Is the game view direction g inside pass k's view (edges pulled in)? */
+static bool pass_contains(int k, const float g[3])
+{
+	const float(*a)[3] = pass_axes[k];
+	float z = dot3(a[2], g);
+	if (z <= 1e-6f)
+		return false;
+	return fabsf(dot3(a[0], g)) <= classic_kx() * PASS_MARGIN * z &&
+		   fabsf(dot3(a[1], g)) <= classic_ky() * PASS_MARGIN * z;
+}
+
+/* The passes the window shows this frame, by sampling it a little beyond
+ * its edges: each sample goes to the first pass that has it, as the
+ * stencil does when they are drawn. Ahead is always drawn, last. */
+static void choose_passes(void)
+{
+	if (!passes_built)
+		build_passes();
+	bool want[COCKPIT_MAX_PASSES] = {false};
+	float t = tanf((float)cockpit_fov * GLM_PI / 360.0f) * 1.1f;
+	for (int iy = 0; iy < SAMPLES_Y; iy++)
+		for (int ix = 0; ix < SAMPLES_X; ix++)
+		{
+			float nx = 2.0f * (float)ix / (SAMPLES_X - 1) - 1.0f;
+			float ny = 2.0f * (float)iy / (SAMPLES_Y - 1) - 1.0f;
+			float e[3] = {nx * aspect * t, ny * t, -1.0f}, d[3];
+			eye_to_view(e, d);
+			float g[3] = {d[0], d[1], -d[2]};
+			for (int k = 0; k < COCKPIT_MAX_PASSES; k++)
+				if (pass_contains(k, g))
+				{
+					want[k] = true;
+					break;
+				}
+		}
+	n_pass_order = 0;
+	for (int k = 1; k < COCKPIT_MAX_PASSES; k++)
+		if (want[k])
+			pass_order[n_pass_order++] = k;
+	pass_order[n_pass_order++] = 0;
+}
+
+/* The camera object's matrix (3x3 words, 1.0 = 32767, row major, columns
+ * right, up, ahead in the world) turned to pass k: M * axes */
+static void turn_camera(uint32_t cam, int k)
+{
+	const float(*a)[3] = pass_axes[k];
+	for (int r = 0; r < 3; r++)
+		for (int c = 0; c < 3; c++)
+		{
+			float v = 0;
+			for (int i = 0; i < 3; i++)
+				v += (float)saved_camera[r * 3 + i] * a[c][i];
+			wrword(cam + 2 * (r * 3 + c), (int)fmaxf(-32767.0f, fminf(32767.0f, roundf(v))));
+		}
+}
+
+/* Empties the game's own display list (as L385ea_Clear3DView does, and
+ * nothing else of what it does) so the next pass has all of it. The GL
+ * scene has taken what it needs from it. */
+static void reset_game_list(void)
+{
+	uint32_t base = (uint32_t)rdlong(FE2_primitives_base);
+	for (int i = 0; i < 12; i += 4)
+		wrlong(base + i, 0);
+	wrword(base + 12, -8);
+	wrlong(FE2_3dview_thing2, base);
+	wrlong(FE2_primitives_end, base + 14);
+}
+
+void Call_CockpitPass(void)
+{
+	uint32_t cam = (uint32_t)GetReg(REG_A3);
+	if (GetReg(REG_D0) == 0)
+	{
+		pass_step = 0;
+		n_pass_order = 0;
+		if (active && scene_active())
+			choose_passes();
+		for (int i = 0; i < 9; i++)
+			saved_camera[i] = rdword(cam + 2 * i);
+	}
+	else if (n_pass_order > 0)
+	{
+		scene_end_pass();
+		scene_capture_soft_nodes();
+		if (pass_step < n_pass_order)
+			reset_game_list();
+	}
+
+	/* not in the cockpit: the one pass the game always drew */
+	if (n_pass_order == 0)
+	{
+		SetReg(REG_D0, pass_step++ == 0);
+		return;
+	}
+
+	while (pass_step < n_pass_order)
+	{
+		int k = pass_order[pass_step++];
+		if (!scene_begin_pass(k) && k != 0)
+			continue;
+		turn_camera(cam, k);
+		wrbyte(cam + 92, 0); /* its frame-turned copy (MatrixMulWTF) is stale */
+		turned = k != 0;
+		SetReg(REG_D0, 1);
+		return;
+	}
+	for (int i = 0; i < 9; i++)
+		wrword(cam + 2 * i, saved_camera[i]);
+	wrbyte(cam + 92, 0);
+	turned = false;
+	SetReg(REG_D0, 0);
+}
+
+bool cockpit_turned_pass(void)
+{
+	return turned;
+}
+
+typedef struct
+{
+	int ref;
+} StencilCmd;
+
+/* Marks where the pass will draw: the part of its view no earlier pass
+ * has. Earlier passes have larger refs, the screen starts at 0. */
+static void stencil_mark(const void *data)
+{
+	const StencilCmd *c = data;
+	glEnable(GL_STENCIL_TEST);
+	glStencilMask(0xff);
+	glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+	glStencilFunc(GL_GREATER, c->ref, 0xff);
+	glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
+}
+
+static void stencil_test(const void *data)
+{
+	const StencilCmd *c = data;
+	glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+	glStencilFunc(GL_EQUAL, c->ref, 0xff);
+	glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
+}
+
+static void stencil_off(const void *data)
+{
+	(void)data;
+	glDisable(GL_STENCIL_TEST);
+	glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+}
+
+static mat4 pass_matrix(int id)
+{
+	/* view space is game view with z flipped: S * axes * S */
+	static const float s[3] = {1, 1, -1};
+	mat4 m = mat4_identity();
+	for (int r = 0; r < 3; r++)
+		for (int c = 0; c < 3; c++)
+			m.m[c * 4 + r] = s[r] * s[c] * pass_axes[id][c][r];
+	return m;
+}
+
+void cockpit_pass_draw_begin(int id)
+{
+	if (id < 0 || id >= COCKPIT_MAX_PASSES || !passes_built)
+		return;
+	pass_rot = pass_matrix(id);
+	gd_set_viewport(GD_VP_VIEW3D);
+
+	StencilCmd *c = gd_custom(stencil_mark, sizeof *c);
+	if (c)
+		c->ref = 255 - id;
+	bool wire = gd_wireframe();
+	gd_set_wireframe(false);
+	gd_set_cull(false);
+	mat4 vp = cockpit_view_pixel_projection();
+	gd_set_projection(&vp);
+	gd_push();
+	gd_identity();
+	float mx = VIEW_W * 0.5f * (1.0f - PASS_MARGIN), my = VIEW_H * 0.5f * (1.0f - PASS_MARGIN);
+	gd_rect2(mx, my, VIEW_W - mx, VIEW_H - my);
+	gd_pop();
+	gd_set_wireframe(wire);
+	c = gd_custom(stencil_test, sizeof *c);
+	if (c)
+		c->ref = 255 - id;
+
+	mat4 w = cockpit_world_projection();
+	gd_set_projection(&w);
+}
+
+void cockpit_pass_draw_end(void)
+{
+	StencilCmd *c = gd_custom(stencil_off, sizeof *c);
+	(void)c;
+	pass_rot = mat4_identity();
+	mat4 w = cockpit_world_projection();
+	gd_set_projection(&w);
 }
 
 /* =========================================================================

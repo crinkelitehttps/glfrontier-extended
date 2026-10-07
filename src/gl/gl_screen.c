@@ -164,9 +164,10 @@ static void create_window(void)
 	SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
 	SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
 #endif
-	/* painter's algorithm only: no depth or stencil buffer needed */
+	/* painter's algorithm only: no depth buffer. The stencil keeps the
+	 * cockpit's turned passes apart (gl_cockpit.c). */
 	SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 0);
-	SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 0);
+	SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8);
 	SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
 
 	Uint32 flags = SDL_WINDOW_OPENGL | SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI;
@@ -426,10 +427,13 @@ void Nu_InsertZNode(void)
 		return;
 	/* A1 is where the game is about to build the matching node of its own
 	 * software depth tree. Some of those (atmosphere haze) have no GL hook,
-	 * so remember the address and look at it when this node is drawn. */
-	uint32_t *soft = scene_record(PRIM_SOFT_NODE, sizeof *soft);
+	 * so remember the address and copy what the game put there later. */
+	SoftNode *soft = scene_record(PRIM_SOFT_NODE, sizeof *soft);
 	if (soft)
-		*soft = (uint32_t)GetReg(REG_A1);
+	{
+		soft->node = (uint32_t)GetReg(REG_A1);
+		soft->band = -1;
+	}
 }
 
 void Nu_IsGLRenderer(void)
@@ -512,7 +516,9 @@ void Nu_DrawScreen(void)
 	}
 	glViewport(0, 0, screen_w, screen_h);
 	glClearColor(0, 0, 0, 1);
-	glClear(GL_COLOR_BUFFER_BIT);
+	glStencilMask(0xff);
+	glClearStencil(0);
+	glClear(GL_COLOR_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
 	if (use_renderer != R_GLWIRE)
 		clear_rect(rects[GD_VP_GAME], MainRGBPalette[fe2_bgcol]);
 

@@ -61,6 +61,8 @@ Nu_PutCylinder		equ	$76
 Nu_PutBlob		equ	$77
 Nu_PutPlanet		equ	$78
 Nu_Draw2DLine		equ	$79
+* Cockpit view: draws the world in more directions (src/gl/gl_cockpit.c)
+Call_CockpitPass	equ	$7a
 
 * don't change. it won't work yet.
 SCR_W			equ	320
@@ -41417,14 +41419,20 @@ L62b5c:
 		addx.l	d7,d5
 		move.l	(a7)+,d0
 		movem.l	d0-5,44(a3)
-		tst.b	A6_opt_bg_stars(a6)
-		beq.s	l62bb8
-		tst.w	A6_plr_in_atmosphere(a6)
-		bmi.s	l62bb4
-		jsr	A5_DrawBGStars(a5)
-	l62bb4:	clr.w	A6_plr_in_atmosphere(a6)
-	l62bb8:	movea.l	A6_big_space(a6),a4
-		jsr	594(a5)
+* Cockpit view: hook, same size as the code it replaced (28 bytes). See
+* Lcockpit_world at the end of the file.
+		jsr	Lcockpit_world
+		nop
+		nop
+		nop
+		nop
+		nop
+		nop
+		nop
+		nop
+		nop
+		nop
+		nop
 		lea	96(a7),a7
 		tst.b	708(a6)
 		beq.s	l62bd6
@@ -66189,3 +66197,54 @@ L8adc0_galaxy_bmp:
 		ds.b	120
 		dc.b	$a,$e,$f,$e,$a,$0,$0,$0,$0,$0,$0,$0,$0,$0,$0,$0
 		ds.b	292
+
+
+******************************************************************************
+* Cockpit view: the world in every direction
+*
+* The game only draws what is inside its own view (about 64 x 36 degrees),
+* but in the cockpit the player looks around. So the stars and the objects
+* are drawn several times per frame, each time with the camera turned
+* another way; the host (src/gl/gl_cockpit.c) picks the directions, turns
+* the camera object for each one and puts each pass's drawing back where
+* it belongs. The straight ahead pass comes last, so whatever the game
+* keeps from drawing (on screen positions and so on) is from it.
+*
+* Hook: the end of the flight view camera setup (after 'movem.l d0-5,44(a3)'),
+* a3 = the camera object.
+*
+* hcall Call_CockpitPass: d0 = 0 to start, 1 after a pass. Returns d0 = 1
+* when there is a pass to draw (the camera at a3 is set up for it), 0 when
+* done (the camera is back as it was).
+******************************************************************************
+Lcockpit_world:
+* 2(a7): A6_plr_in_atmosphere as it was, 0(a7): what the passes left in it
+		move.w	A6_plr_in_atmosphere(a6),-(a7)
+		clr.w	-(a7)
+		moveq	#0,d0
+lcockpit_pass:
+		hcall	#Call_CockpitPass
+		tst.w	d0
+		beq.s	lcockpit_done
+		move.w	2(a7),A6_plr_in_atmosphere(a6)
+		move.l	a3,-(a7)
+* the replaced code
+		tst.b	A6_opt_bg_stars(a6)
+		beq.s	lcockpit_objects
+		tst.w	A6_plr_in_atmosphere(a6)
+		bmi.s	lcockpit_nostars
+		jsr	A5_DrawBGStars(a5)
+lcockpit_nostars:
+		clr.w	A6_plr_in_atmosphere(a6)
+lcockpit_objects:
+		movea.l	A6_big_space(a6),a4
+		jsr	594(a5)
+		movea.l	(a7)+,a3
+		move.w	A6_plr_in_atmosphere(a6),d0
+		or.w	d0,(a7)
+		moveq	#1,d0
+		bra.s	lcockpit_pass
+lcockpit_done:
+		move.w	(a7)+,A6_plr_in_atmosphere(a6)
+		addq.l	#2,a7
+		rts

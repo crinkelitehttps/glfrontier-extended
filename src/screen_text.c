@@ -9,6 +9,7 @@
 #include "renderer.h"
 #include "screen_text.h"
 
+#include "gl/gl_cockpit.h"
 #include "screen_font.h" /* font_bmp: 8x8 glyphs, 10 bytes each */
 
 #define FONT_FIRST 0x20
@@ -91,7 +92,9 @@ static int n_queued;
 
 void Nu_QueueDrawStr(void)
 {
-	if (n_queued >= MAX_QUEUED_STRINGS)
+	/* text on things in the 3D view, at the classic view's positions: not
+	 * from the cockpit's turned passes */
+	if (n_queued >= MAX_QUEUED_STRINGS || cockpit_turned_pass())
 		return;
 	strncpy((char *)queued[n_queued].str, GetReg(REG_A0) + STRam, sizeof(queued[0].str) - 1);
 	queued[n_queued].str[sizeof(queued[0].str) - 1] = 0;

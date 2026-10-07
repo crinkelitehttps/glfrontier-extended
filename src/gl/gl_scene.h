@@ -109,7 +109,29 @@ bool scene_insert_node(uint32_t z);
  * (used while a complex polygon is being recorded). */
 void scene_lock_node(bool lock);
 
+/* Further passes over the world in the same frame (the cockpit's turned
+ * camera, see cockpit_pass_* in gl_cockpit.h). Records between begin and
+ * end go to a depth tree of their own, drawn after pass 0's in the order
+ * of `id` (0 .. COCKPIT_MAX_PASSES-1). False if there is no room for it:
+ * the records then stay in pass 0. */
+bool scene_begin_pass(int id);
+void scene_end_pass(void);
+
+/* PRIM_SOFT_NODE payload: a node of the game's software depth tree. The
+ * game fills it in after the GL node is made, and reuses that memory for
+ * the next pass, so it is copied out (gl_atmos.c) once the pass is over. */
+typedef struct
+{
+	uint32_t node; /* address in emulated RAM */
+	int32_t band;  /* the copy, -1 if none */
+} SoftNode;
+/* Copies every soft node recorded so far that is not copied yet */
+void scene_capture_soft_nodes(void);
+void soft_node_capture(SoftNode *s); /* gl_atmos.c */
+void soft_nodes_reset(void);         /* gl_atmos.c, with scene_reset */
+
 /* ---- replay (called from Nu_DrawScreen) -------------------------------- */
+/* Pass 0, then the further passes (each set up by cockpit_pass_draw_begin) */
 void scene_draw(void);
 
 #endif /* GL_SCENE_H */
