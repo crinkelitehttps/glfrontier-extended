@@ -28,12 +28,12 @@ void Call_GetMouseInput(void)
 	mouse_mov[1] = SDL_SwapBE16(SDL_SwapBE16(mouse_mov[1]) + input.motion_y);
 	mouse_mov[2] = SDL_SwapBE16(0xf8 | input.cur_mousebut_state);
 
-	/* window pixels -> game screen, inside the letterboxed game area */
-	int gw = Screen_GetGameWidth(), gh = Screen_GetGameHeight();
-	if (gw > 0 && gh > 0)
+	/* window pixels -> game screen (letterboxed game area, or the cockpit) */
+	int gx, gy;
+	if (Screen_WindowToGame(input.abs_x, input.abs_y, &gx, &gy))
 	{
-		mouse_abs[0] = SDL_SwapBE16(320 * (input.abs_x - Screen_GetGameOffsetX()) / gw);
-		mouse_abs[1] = SDL_SwapBE16(200 * (input.abs_y - Screen_GetGameOffsetY()) / gh);
+		mouse_abs[0] = SDL_SwapBE16(gx);
+		mouse_abs[1] = SDL_SwapBE16(gy);
 	}
 
 	input.motion_x = input.motion_y = 0;

@@ -1,0 +1,449 @@
+/*
+ * gl_cockpit.c - see gl_cockpit.h.
+ *
+ * Spaces:
+ *   view space   the game's camera space as gl_scene records it: x right,
+ *                y up, looking down -z. The cockpit is modelled in it too,
+ *                in metres, with the eye at the origin.
+ *   eye space    view space turned by the head: V = head_view maps view
+ *                space to eye space, Q (its transpose) back.
+ *   view pixels  the game's 2D drawing over its 3D view: x 0..320, y 0..168
+ *                downwards, through the classic projection.
+ */
+#include <math.h>
+#include <string.h>
+
+#include "gl_api.h"
+#include "gl_cockpit.h"
+#include "gl_draw.h"
+#include "gl_fill2d.h"
+
+#include "freecam.h"
+#include "gamepad.h"
+#include "game_state.h"
+#include "headtrack.h"
+#include "main.h"
+#include "renderer.h"
+
+bool cockpit_enabled = true;
+int cockpit_fov = 60;
+bool headtrack_enabled = true;
+int headtrack_port = HEADTRACK_DEFAULT_PORT;
+
+#define VIEW_W   FILL2D_VIEW_W
+#define VIEW_H   FILL2D_VIEW_H
+#define HUD_DIST 1000.0f /* where the view pixel plane sits: inside the world's near/far */
+
+#define WORLD_NEAR   1.0f
+#define WORLD_FAR    10000000000.0f
+#define COCKPIT_NEAR 0.02f
+#define COCKPIT_FAR  50.0f
+
+/* Control panel on the dashboard: 320x32 screen pixels at the ST's 1.2
+ * pixel aspect, facing the eye, centred PANEL_DOWN degrees below ahead so
+ * its bezel starts just under the bottom of the classic view (18.25). */
+#define PANEL_W     0.76f
+#define PANEL_H     (PANEL_W * 32.0f / 320.0f * 1.2f)
+#define PANEL_DIST  0.62f
+#define PANEL_DOWN  24.5f
+#define BEZEL       0.025f
+#define PANEL_ROW0  168 /* first screen row of the panel */
+#define DASH_HALF_W 0.8f
+
+static bool active;
+static float aspect = 16.0f / 9.0f;
+static HeadPose pose;
+static mat4 head_view; /* view space -> eye space (rotation only) */
+static float eye[3];   /* eye position in view space, metres */
+
+/* Panel corners in view space: top left, top right, bottom left, bottom right */
+static float panel[4][3];
+
+/* =========================================================================
+ * Small vector helpers
+ * ========================================================================= */
+static float dot3(const float a[3], const float b[3])
+{
+	return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+}
+
+static void sub3(const float a[3], const float b[3], float out[3])
+{
+	for (int i = 0; i < 3; i++)
+		out[i] = a[i] - b[i];
+}
+
+static void cross3(const float a[3], const float b[3], float out[3])
+{
+	out[0] = a[1] * b[2] - a[2] * b[1];
+	out[1] = a[2] * b[0] - a[0] * b[2];
+	out[2] = a[0] * b[1] - a[1] * b[0];
+}
+
+/* Q * v: eye space direction -> view space */
+static void eye_to_view(const float v[3], float out[3])
+{
+	const float *m = head_view.m;
+	for (int r = 0; r < 3; r++)
+		out[r] = m[r * 4 + 0] * v[0] + m[r * 4 + 1] * v[1] + m[r * 4 + 2] * v[2];
+}
+
+/* Half-extents of the classic projection at distance 1 */
+static float classic_ky(void)
+{
+	return tanf(CLASSIC_FOV * GLM_PI / 360.0f);
+}
+static float classic_kx(void)
+{
+	return CLASSIC_ASPECT * classic_ky();
+}
+
+/* =========================================================================
+ * Per frame
+ * ========================================================================= */
+static void update_tracker(void)
+{
+	static bool open, failed;
+	static int open_port;
+	if (open && (!headtrack_enabled || open_port != headtrack_port))
+	{
+		headtrack_close();
+		open = false;
+	}
+	if (headtrack_enabled && !open && !(failed && open_port == headtrack_port))
+	{
+		open_port = headtrack_port;
+		open = headtrack_open(headtrack_port);
+		failed = !open;
+	}
+	HeadPose zero = {0};
+	pose = open ? headtrack_poll() : zero;
+
+	/* the controller's look-around adds on */
+	float look_x, look_y;
+	gamepad_look(&look_x, &look_y);
+	pose.yaw += look_x * GLM_PI / 180.0f;
+	pose.pitch -= look_y * GLM_PI / 180.0f;
+}
+
+static void build_panel(void)
+{
+	float a = PANEL_DOWN * GLM_PI / 180.0f;
+	float c[3] = {0, -PANEL_DIST * sinf(a), -PANEL_DIST * cosf(a)};
+	float down[3] = {0, -cosf(a), sinf(a)}; /* in the panel's plane, towards its bottom edge */
+	for (int i = 0; i < 4; i++)
+	{
+		float u = (i & 1) ? 0.5f : -0.5f, v = (i & 2) ? 0.5f : -0.5f;
+		panel[i][0] = c[0] + u * PANEL_W;
+		panel[i][1] = c[1] + v * PANEL_H * down[1];
+		panel[i][2] = c[2] + v * PANEL_H * down[2];
+	}
+}
+
+bool cockpit_begin_frame(int window_w, int window_h)
+{
+	update_tracker();
+
+	active = cockpit_enabled && use_renderer != R_OLD && game_screen() == SCREEN_FLIGHT &&
+			 game_flight_view() == VIEW_FRONT && !freecam_active();
+	if (window_w > 0 && window_h > 0)
+		aspect = (float)window_w / (float)window_h;
+
+	/* V = Rz(roll) Rx(-pitch) Ry(yaw): the inverse of the head's
+	 * orientation Ry(-yaw) Rx(pitch) Rz(-roll) (yaw right +, pitch up +,
+	 * roll right ear down +) */
+	const float deg = 180.0f / GLM_PI;
+	mat4 ry = mat4_rotate(pose.yaw * deg, 0, 1, 0);
+	mat4 rx = mat4_rotate(-pose.pitch * deg, 1, 0, 0);
+	mat4 rz = mat4_rotate(pose.roll * deg, 0, 0, 1);
+	mat4 t = mat4_mul(&rx, &ry);
+	head_view = mat4_mul(&rz, &t);
+	eye[0] = pose.x / 100.0f;
+	eye[1] = pose.y / 100.0f;
+	eye[2] = pose.z / 100.0f;
+
+	build_panel();
+	return active;
+}
+
+bool cockpit_active(void)
+{
+	return active;
+}
+
+/* =========================================================================
+ * Projections
+ * ========================================================================= */
+static mat4 world_lens(void)
+{
+	return mat4_perspective((float)cockpit_fov, aspect, WORLD_NEAR, WORLD_FAR);
+}
+
+mat4 cockpit_world_projection(void)
+{
+	mat4 lens = world_lens();
+	return mat4_mul(&lens, &head_view);
+}
+
+void cockpit_world_split(mat4 *lens, mat4 *head_rotation)
+{
+	*lens = world_lens();
+	*head_rotation = head_view;
+}
+
+/* Cockpit geometry: lens with a near plane for things a metre away, head
+ * rotation, then the eye's position */
+static mat4 cockpit_projection(void)
+{
+	mat4 lens = mat4_perspective((float)cockpit_fov, aspect, COCKPIT_NEAR, COCKPIT_FAR);
+	mat4 t = mat4_translate(-eye[0], -eye[1], -eye[2]);
+	mat4 vt = mat4_mul(&head_view, &t);
+	return mat4_mul(&lens, &vt);
+}
+
+mat4 cockpit_view_pixel_projection(void)
+{
+	if (!active)
+		return mat4_ortho(0, VIEW_W, VIEW_H, 0, -1, 1);
+
+	/* view pixel -> the point on the plane z = -HUD_DIST that the classic
+	 * projection shows at that pixel */
+	float kx = classic_kx(), ky = classic_ky();
+	mat4 l = mat4_identity();
+	l.m[0] = HUD_DIST * 2.0f * kx / VIEW_W;
+	l.m[5] = -HUD_DIST * 2.0f * ky / VIEW_H;
+	l.m[12] = -HUD_DIST * kx;
+	l.m[13] = HUD_DIST * ky;
+	l.m[14] = -HUD_DIST;
+	mat4 w = cockpit_world_projection();
+	return mat4_mul(&w, &l);
+}
+
+/* =========================================================================
+ * Drawing
+ * ========================================================================= */
+static GLuint prog, vao, vbo;
+static GLint u_tex, u_discard;
+
+static const char *VS_QUAD = "in vec4 aPos;\n"
+							 "in vec2 aUV;\n"
+							 "out vec2 vUV;\n"
+							 "void main(){ gl_Position = aPos; vUV = aUV; }\n";
+
+static const char *FS_QUAD = "in vec2 vUV;\n"
+							 "uniform sampler2D uTex;\n"
+							 "uniform int uDiscard;\n"
+							 "out vec4 fragColor;\n"
+							 "void main(){\n"
+							 "  vec4 c = texture(uTex, vUV);\n"
+							 "  if (uDiscard != 0 && c.a < 0.5) discard;\n"
+							 "  fragColor = vec4(c.rgb, 1.0);\n"
+							 "}\n";
+
+void cockpit_init(void)
+{
+	static const char *const attribs[] = {"aPos", "aUV"};
+	prog = gd_build_program(VS_QUAD, FS_QUAD, attribs, 2);
+	u_tex = glGetUniformLocation(prog, "uTex");
+	u_discard = glGetUniformLocation(prog, "uDiscard");
+
+	glGenVertexArrays(1, &vao);
+	glGenBuffers(1, &vbo);
+	glBindVertexArray(vao);
+	glBindBuffer(GL_ARRAY_BUFFER, vbo);
+	glEnableVertexAttribArray(0);
+	glVertexAttribPointer(0, 4, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void *)0);
+	glEnableVertexAttribArray(1);
+	glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void *)(4 * sizeof(float)));
+	glBindVertexArray(0);
+}
+
+void cockpit_shutdown(void)
+{
+	glDeleteBuffers(1, &vbo);
+	glDeleteVertexArrays(1, &vao);
+	glDeleteProgram(prog);
+}
+
+/* A part of the emulated screen drawn on a quad: clip space corners (top
+ * left, top right, bottom left, bottom right) and their texture coords */
+typedef struct
+{
+	float v[4][6];
+	int discard; /* colour 255 (transparent) shows what is behind */
+	int upload;  /* first use this frame: upload the screen */
+} TexQuad;
+
+static void tex_quad_pass(const void *data)
+{
+	const TexQuad *q = data;
+	if (q->upload)
+		gl_screen_upload();
+	glUseProgram(prog);
+	glUniform1i(u_tex, 0);
+	glUniform1i(u_discard, q->discard);
+	glActiveTexture(GL_TEXTURE0);
+	glBindTexture(GL_TEXTURE_2D, gl_screen_texture());
+	glBindVertexArray(vao);
+	glBindBuffer(GL_ARRAY_BUFFER, vbo);
+	glBufferData(GL_ARRAY_BUFFER, sizeof q->v, q->v, GL_STREAM_DRAW);
+	glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+	glBindVertexArray(0);
+	glBindTexture(GL_TEXTURE_2D, 0);
+}
+
+/* Queues screen rows y0..y1 on the quad `corners` (through `m`) */
+static void queue_screen_quad(const mat4 *m, const float corners[4][3], int y0, int y1, bool discard, bool upload)
+{
+	TexQuad *q = gd_custom(tex_quad_pass, sizeof *q);
+	if (!q)
+		return;
+	const float u1 = (float)GL_SCREEN_W / GL_SCREEN_TEX_W;
+	for (int i = 0; i < 4; i++)
+	{
+		mat4_xform(m, corners[i][0], corners[i][1], corners[i][2], q->v[i]);
+		q->v[i][4] = (i & 1) ? u1 : 0.0f;
+		q->v[i][5] = (float)((i & 2) ? y1 : y0) / GL_SCREEN_TEX_H;
+	}
+	q->discard = discard;
+	q->upload = upload;
+}
+
+static void quad(const float a[3], const float b[3], const float c[3], const float d[3], float r, float g, float bl)
+{
+	gd_color3f(r, g, bl);
+	gd_quad(a, b, c, d);
+}
+
+/* The frame: canopy pillars and top bar, the dashboard and the bezel round
+ * the panel. Flat colours; only the shapes and parallax matter. */
+static void draw_frame(void)
+{
+	/* canopy pillars, about 40 degrees out, clear of the classic view (32);
+	 * their feet go behind the dashboard */
+	for (int side = -1; side <= 1; side += 2)
+	{
+		float s = (float)side;
+		float a[3] = {s * 0.58f, -0.40f, -0.66f}, b[3] = {s * 0.62f, -0.40f, -0.66f};
+		float c[3] = {s * 0.60f, 0.42f, -0.74f}, d[3] = {s * 0.56f, 0.42f, -0.74f};
+		quad(a, b, c, d, 0.20f, 0.21f, 0.24f);
+	}
+	/* top bar, just above the classic view's top edge (18) */
+	{
+		float a[3] = {-0.60f, 0.36f, -0.74f}, b[3] = {0.60f, 0.36f, -0.74f};
+		float c[3] = {0.60f, 0.40f, -0.74f}, d[3] = {-0.60f, 0.40f, -0.74f};
+		quad(a, b, c, d, 0.20f, 0.21f, 0.24f);
+	}
+
+	/* dashboard: the panel's plane, wide and down out of sight */
+	float down[3], right[3] = {1, 0, 0};
+	sub3(panel[2], panel[0], down);
+	float len = sqrtf(dot3(down, down));
+	for (int i = 0; i < 3; i++)
+		down[i] /= len;
+	float top[3], dash[4][3];
+	for (int i = 0; i < 3; i++)
+		top[i] = (panel[0][i] + panel[1][i]) * 0.5f - down[i] * BEZEL;
+	for (int i = 0; i < 3; i++)
+	{
+		dash[0][i] = top[i] - right[i] * DASH_HALF_W;
+		dash[1][i] = top[i] + right[i] * DASH_HALF_W;
+		dash[2][i] = dash[1][i] + down[i] * 1.5f;
+		dash[3][i] = dash[0][i] + down[i] * 1.5f;
+	}
+	quad(dash[0], dash[1], dash[2], dash[3], 0.12f, 0.13f, 0.15f);
+	/* its ends wrap back round the seat */
+	for (int side = -1; side <= 1; side += 2)
+	{
+		const float *edge_top = dash[side < 0 ? 0 : 1], *edge_bottom = dash[side < 0 ? 3 : 2];
+		float back_top[3] = {(float)side * 1.1f, edge_top[1], 0.4f};
+		float back_bottom[3] = {back_top[0], edge_bottom[1], 0.4f};
+		quad(edge_top, back_top, back_bottom, edge_bottom, 0.10f, 0.11f, 0.13f);
+	}
+
+	/* bezel */
+	float bz[4][3];
+	for (int i = 0; i < 3; i++)
+	{
+		float o = BEZEL;
+		bz[0][i] = panel[0][i] - right[i] * o - down[i] * o;
+		bz[1][i] = panel[1][i] + right[i] * o - down[i] * o;
+		bz[2][i] = panel[3][i] + right[i] * o + down[i] * o;
+		bz[3][i] = panel[2][i] - right[i] * o + down[i] * o;
+	}
+	quad(bz[0], bz[1], bz[2], bz[3], 0.06f, 0.06f, 0.07f);
+}
+
+void cockpit_draw(void)
+{
+	if (!active)
+		return;
+
+	/* the game's 2D layer over its 3D view, on its classic directions */
+	mat4 hud = cockpit_view_pixel_projection();
+	const float view_corners[4][3] = {{0, 0, 0}, {VIEW_W, 0, 0}, {0, VIEW_H, 0}, {VIEW_W, VIEW_H, 0}};
+	gd_set_viewport(GD_VP_WINDOW);
+	queue_screen_quad(&hud, view_corners, 0, PANEL_ROW0, true, true);
+
+	/* the cockpit itself */
+	mat4 cp = cockpit_projection();
+	gd_set_projection(&cp);
+	gd_push();
+	gd_identity();
+	gd_set_cull(false);
+	draw_frame();
+	queue_screen_quad(&cp, (const float(*)[3])panel, PANEL_ROW0, GL_SCREEN_H, false, false);
+	gd_pop();
+}
+
+/* =========================================================================
+ * Mouse
+ * ========================================================================= */
+bool cockpit_window_to_screen(int wx, int wy, int *sx, int *sy)
+{
+	if (!active || screen_w <= 0 || screen_h <= 0)
+		return false;
+
+	/* the ray through the pixel, in view space */
+	float t = tanf((float)cockpit_fov * GLM_PI / 360.0f);
+	float nx = 2.0f * ((float)wx + 0.5f) / (float)screen_w - 1.0f;
+	float ny = 1.0f - 2.0f * ((float)wy + 0.5f) / (float)screen_h;
+	float e[3] = {nx * aspect * t, ny * t, -1.0f}, d[3];
+	eye_to_view(e, d);
+
+	/* the panel, from the eye's position */
+	float u_axis[3], v_axis[3], n[3], to[3];
+	sub3(panel[1], panel[0], u_axis);
+	sub3(panel[2], panel[0], v_axis);
+	cross3(u_axis, v_axis, n);
+	float dn = dot3(d, n);
+	if (fabsf(dn) > 1e-9f)
+	{
+		sub3(panel[0], eye, to);
+		float dist = dot3(to, n) / dn;
+		if (dist > 0.0f)
+		{
+			float p[3], rel[3];
+			for (int i = 0; i < 3; i++)
+				p[i] = eye[i] + d[i] * dist;
+			sub3(p, panel[0], rel);
+			float u = dot3(rel, u_axis) / dot3(u_axis, u_axis);
+			float v = dot3(rel, v_axis) / dot3(v_axis, v_axis);
+			if (u >= 0.0f && u < 1.0f && v >= 0.0f && v < 1.0f)
+			{
+				*sx = (int)(u * GL_SCREEN_W);
+				*sy = PANEL_ROW0 + (int)(v * (GL_SCREEN_H - PANEL_ROW0));
+				return true;
+			}
+		}
+	}
+
+	/* the view pixel plane, held to its edges */
+	if (d[2] >= -1e-6f)
+		return false;
+	float px = (d[0] / -d[2] / classic_kx() + 1.0f) * VIEW_W * 0.5f;
+	float py = (1.0f - d[1] / -d[2] / classic_ky()) * VIEW_H * 0.5f;
+	*sx = (int)fminf(fmaxf(px, 0.0f), VIEW_W - 1);
+	*sy = (int)fminf(fmaxf(py, 0.0f), VIEW_H - 1);
+	return true;
+}

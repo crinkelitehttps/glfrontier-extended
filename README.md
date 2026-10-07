@@ -11,6 +11,15 @@ A fork of GLFrontier (OpenGL Frontier Elite 2) that modernizes the build system,
 * Ctrl-F	- Toggle the in-game menu (settings, cheats, mods, debug).
 * Ctrl-V	- Toggle the free camera (in the flight view).
 * F	        - Toggles fps readout.
+* Ctrl-K	- Toggle the 3D cockpit view.
+* Ctrl-C	- Recentre head tracking.
+
+### Cockpit view, head tracking and gamepads
+
+In the front flight view the game is shown from a seat in the ship: the world fills the window, the game's HUD is drawn at infinity so it stays on what it marks when you look around, and the control panel sits on the dashboard (it still takes mouse clicks). Ctrl-K or the SETTINGS page turns it off and sets the field of view. Other views and screens keep the classic layout.
+
+* **Head tracking:** OpenTrack with the output set to "UDP over network", host 127.0.0.1, port 4242. Rotation turns the view, position moves your head in the cockpit. Recentre with Ctrl-C (or OpenTrack's own centre key).
+* **Gamepads:** any controller SDL knows. Left stick steers (analog), triggers are throttle, A fires, right stick looks around. Holding LB puts the console's F1-F10 on the D-pad and face buttons, RB the time acceleration. The bindings are in `gamepad.cfg` beside the saves, written on the first run with the format explained at the top; edit it to change them.
 
 ### Free camera
 

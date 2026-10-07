@@ -9,12 +9,14 @@
  * Frame layout (bottom to top):
  *   1. 3D view        scene_draw() into GD_VP_VIEW3D
  *   2. screen blit    emulated 320x200 framebuffer, colour 255 transparent
+ *                     (in the cockpit view: HUD, cockpit and panel, gl_cockpit.c)
  *   3. overlays       touch controls / settings cog
  *   4. emulator menu  Dear ImGui, drawn after the batch is flushed
  */
 #include <SDL.h>
 
 #include "gl_api.h"
+#include "gl_cockpit.h"
 #include "gl_draw.h"
 #include "gl_overlay.h"
 #include "gl_planet.h"
@@ -58,10 +60,10 @@ int screen_h = 480;
  * ========================================================================= */
 #define GAME_W      320
 #define GAME_H      240
-#define SCR_W       320 /* emulated framebuffer */
-#define SCR_H       200
-#define SCR_TEX_W   512
-#define SCR_TEX_H   256
+#define SCR_W       GL_SCREEN_W /* emulated framebuffer */
+#define SCR_H       GL_SCREEN_H
+#define SCR_TEX_W   GL_SCREEN_TEX_W
+#define SCR_TEX_H   GL_SCREEN_TEX_H
 #define PANEL_LINES 38 /* control panel height in the 240 line game area */
 
 static int lb_x, lb_y, lb_w = 640, lb_h = 480;
@@ -114,6 +116,17 @@ int Screen_GetGameOffsetY(void)
 {
 	return screen_h - lb_y - lb_h;
 }
+bool Screen_WindowToGame(int wx, int wy, int *gx, int *gy)
+{
+	if (cockpit_active())
+		return cockpit_window_to_screen(wx, wy, gx, gy);
+	if (lb_w <= 0 || lb_h <= 0)
+		return false;
+	*gx = SCR_W * (wx - Screen_GetGameOffsetX()) / lb_w;
+	*gy = SCR_H * (wy - Screen_GetGameOffsetY()) / lb_h;
+	return true;
+}
+
 int Screen_GetGameHeight(void)
 {
 	return lb_h;
@@ -299,7 +312,7 @@ static void init_screen_blit(void)
 	glBindTexture(GL_TEXTURE_2D, 0);
 }
 
-static void upload_screen(void)
+void gl_screen_upload(void)
 {
 	const uint8_t *src = VideoRaster;
 	for (int y = 0; y < SCR_H; y++)
@@ -316,6 +329,11 @@ static void upload_screen(void)
 	glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, SCR_W, SCR_H, GL_RGBA, GL_UNSIGNED_BYTE, framebuf);
 }
 
+GLuint gl_screen_texture(void)
+{
+	return screen_tex;
+}
+
 typedef struct
 {
 	int transparent;
@@ -324,7 +342,7 @@ typedef struct
 static void screen_blit_pass(const void *data)
 {
 	const BlitPass *b = data;
-	upload_screen();
+	gl_screen_upload();
 	glUseProgram(blit_prog);
 	glUniform1i(u_blit_tex, 0);
 	glUniform1i(u_blit_discard, b->transparent);
@@ -346,6 +364,7 @@ void Screen_Init(void)
 	gl_prims_init();
 	gl_planet_init();
 	init_screen_blit();
+	cockpit_init();
 
 	glDisable(GL_DEPTH_TEST);
 	glDisable(GL_CULL_FACE);
@@ -362,6 +381,7 @@ void Screen_Init(void)
 void Screen_UnInit(void)
 {
 	ui_shutdown();
+	cockpit_shutdown();
 	glDeleteTextures(1, &screen_tex);
 	glDeleteBuffers(1, &blit_vbo);
 	glDeleteVertexArrays(1, &blit_vao);
@@ -483,7 +503,13 @@ void Nu_DrawScreen(void)
 	build_rgb_palette(CtrlRGBPalette, CtrlPalette, 16);
 
 	Screen_SyncSize(); /* a DPI change (browser zoom, other monitor) may come without a resize event */
+	bool cockpit = cockpit_begin_frame(screen_w, screen_h);
 	layout_rects(rects);
+	if (cockpit) /* the 3D view fills the window */
+	{
+		memcpy(rects[GD_VP_GAME], rects[GD_VP_WINDOW], sizeof(rects[0]));
+		memcpy(rects[GD_VP_VIEW3D], rects[GD_VP_WINDOW], sizeof(rects[0]));
+	}
 	glViewport(0, 0, screen_w, screen_h);
 	glClearColor(0, 0, 0, 1);
 	glClear(GL_COLOR_BUFFER_BIT);
@@ -493,7 +519,8 @@ void Nu_DrawScreen(void)
 	gd_begin_frame(rects);
 
 	/* 1. 3D view */
-	mat4 persp = mat4_perspective(36.5f, 1.9f, 1.0f, 10000000000.0f);
+	mat4 persp = cockpit ? cockpit_world_projection()
+						 : mat4_perspective(CLASSIC_FOV, CLASSIC_ASPECT, 1.0f, 10000000000.0f);
 	gd_set_viewport(GD_VP_VIEW3D);
 	gd_set_projection(&persp);
 	gd_set_wireframe(use_renderer == R_GLWIRE);
@@ -504,16 +531,23 @@ void Nu_DrawScreen(void)
 	/* 2. emulated screen, with the text the game queued during the frame */
 	screen_text_draw_queue();
 
-	mat4 ortho = mat4_ortho(0, 320, 0, 200, -1, 1);
-	gd_set_viewport(GD_VP_GAME);
-	gd_set_projection(&ortho);
-	gd_identity();
-	gd_color3ub(0, 0, 0);
-	gd_rect2(0, 0, 320, 32); /* black strip behind the control panel */
+	if (cockpit)
+	{
+		cockpit_draw(); /* HUD, cockpit and panel */
+	}
+	else
+	{
+		mat4 ortho = mat4_ortho(0, 320, 0, 200, -1, 1);
+		gd_set_viewport(GD_VP_GAME);
+		gd_set_projection(&ortho);
+		gd_identity();
+		gd_color3ub(0, 0, 0);
+		gd_rect2(0, 0, 320, 32); /* black strip behind the control panel */
 
-	BlitPass *blit = gd_custom(screen_blit_pass, sizeof *blit);
-	if (blit)
-		blit->transparent = (use_renderer != R_OLD);
+		BlitPass *blit = gd_custom(screen_blit_pass, sizeof *blit);
+		if (blit)
+			blit->transparent = (use_renderer != R_OLD);
+	}
 
 	/* 3. overlays */
 	gl_overlay_draw();

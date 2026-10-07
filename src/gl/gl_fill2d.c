@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "gl_cockpit.h"
 #include "gl_draw.h"
 #include "gl_fill2d.h"
 
@@ -13,6 +14,9 @@
  * hundreds of beziers */
 #define MAX_EDGES     65536
 #define MAX_CROSSINGS 1024
+/* Cockpit view: how far (view pixels, 89.9 degrees) haze bands that
+ * reach the classic view's edges are carried on beyond them */
+#define EXTEND        100000.0f
 
 typedef struct
 {
@@ -105,7 +109,7 @@ void fill2d_draw(enum Fill2dRule rule, fill2d_colour_fn colour, const void *ctx)
 	}
 
 	mat4 saved_proj = *gd_projection();
-	mat4 view = mat4_ortho(0, FILL2D_VIEW_W, FILL2D_VIEW_H, 0, -1, 1);
+	mat4 view = cockpit_view_pixel_projection();
 	gd_set_viewport(GD_VP_VIEW3D);
 	gd_set_projection(&view);
 	gd_push();
@@ -118,6 +122,22 @@ void fill2d_draw(enum Fill2dRule rule, fill2d_colour_fn colour, const void *ctx)
 	float step = FILL2D_VIEW_H / (float)rows;
 	Crossing xs[MAX_CROSSINGS];
 	int last_rgb = -2;
+	/* The game clips its haze bands and the ground to the classic view; in
+	 * the cockpit, where the view is wider, spans touching an edge carry on
+	 * past it. Planets only when they span the whole width (the ground, or
+	 * a planet filling the view), not a disc cut by one edge. */
+	bool extend = false;
+	if (cockpit_active())
+	{
+		bool left = false, right = false;
+		for (int i = 0; i < n_edges && !(left && right); i++)
+		{
+			const Edge *e = &edges[i];
+			left = left || fminf(e->x0, e->x1) <= 0.5f;
+			right = right || fmaxf(e->x0, e->x1) >= FILL2D_VIEW_W - 0.5f;
+		}
+		extend = rule == FILL2D_EVEN_ODD || (left && right);
+	}
 	for (float y = floorf(ymin / step) * step; y < ymax; y += step)
 	{
 		float yc = y + step * 0.5f;
@@ -165,7 +185,19 @@ void fill2d_draw(enum Fill2dRule rule, fill2d_colour_fn colour, const void *ctx)
 					gd_color3ub((rgb & 0xf00) >> 4, rgb & 0xf0, (rgb & 0xf) << 4);
 					last_rgb = rgb;
 				}
-				gd_rect2(x0, y, x1, y + step);
+				float y0 = y, y1 = y + step;
+				if (extend)
+				{
+					if (x0 <= 0.5f)
+						x0 = -EXTEND;
+					if (x1 >= FILL2D_VIEW_W - 0.5f)
+						x1 = FILL2D_VIEW_W + EXTEND;
+					if (y0 <= 0.0f)
+						y0 = -EXTEND;
+					if (y1 >= FILL2D_VIEW_H)
+						y1 = FILL2D_VIEW_H + EXTEND;
+				}
+				gd_rect2(x0, y0, x1, y1);
 			}
 			/* planet rule: the next outline crossing ends the row */
 			if (rule == FILL2D_PLANET && xs[i + 1].code == 0)

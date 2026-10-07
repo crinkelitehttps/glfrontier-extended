@@ -15,6 +15,7 @@
 #include <SDL.h>
 
 #include "freecam.h"
+#include "gl/gl_cockpit.h"
 #include "main.h"
 #include "mods.h"
 #include "renderer.h"
@@ -33,6 +34,10 @@ typedef struct
 	int vanilla_saves;
 	int emulation_speed;
 	int touch_pads_hidden;
+	int cockpit;
+	int cockpit_fov;
+	int headtrack;
+	int headtrack_port;
 } Settings;
 
 static const struct
@@ -48,6 +53,10 @@ static const struct
 	{"vanilla_saves", offsetof(Settings, vanilla_saves)},
 	{"emulation_speed", offsetof(Settings, emulation_speed)},
 	{"touch_pads_hidden", offsetof(Settings, touch_pads_hidden)},
+	{"cockpit", offsetof(Settings, cockpit)},
+	{"cockpit_fov", offsetof(Settings, cockpit_fov)},
+	{"headtrack", offsetof(Settings, headtrack)},
+	{"headtrack_port", offsetof(Settings, headtrack_port)},
 };
 #define N_FIELDS ((int)(sizeof(fields) / sizeof(fields[0])))
 
@@ -83,6 +92,10 @@ static Settings current(void)
 	s.vanilla_saves = mods_vanilla_saves;
 	s.emulation_speed = emulation_speed;
 	s.touch_pads_hidden = touch_pads_hidden();
+	s.cockpit = cockpit_enabled;
+	s.cockpit_fov = cockpit_fov;
+	s.headtrack = headtrack_enabled;
+	s.headtrack_port = headtrack_port;
 	return s;
 }
 
@@ -102,6 +115,12 @@ static void apply(const Settings *s)
 	if (s->emulation_speed >= 1 && s->emulation_speed <= 100)
 		emulation_speed = s->emulation_speed;
 	touch_set_pads_hidden(s->touch_pads_hidden != 0);
+	cockpit_enabled = s->cockpit != 0;
+	if (s->cockpit_fov >= 30 && s->cockpit_fov <= 120)
+		cockpit_fov = s->cockpit_fov;
+	headtrack_enabled = s->headtrack != 0;
+	if (s->headtrack_port > 0 && s->headtrack_port < 65536)
+		headtrack_port = s->headtrack_port;
 }
 
 void settings_load(void)

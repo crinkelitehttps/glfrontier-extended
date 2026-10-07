@@ -10,6 +10,7 @@
 #include "settings.h"
 #include "audio.h"
 #include "freecam.h"
+#include "gamepad.h"
 #include "m68000.h"
 #include "hostcall.h"
 #include "input.h"
@@ -143,7 +144,8 @@ void Main_UnPauseEmulation(void)
  * Events
  * ========================================================================= */
 
-/* Is the click inside (x1,y1)-(x2,y2) in 320x240 game coordinates? */
+/* Is the click inside (x1,y1)-(x2,y2) in 320x240 coordinates of the
+ * letterboxed game area (window overlays like the cog)? */
 static bool hit_region_clicked(const SDL_Event *event, int x1, int y1, int x2, int y2)
 {
 	int gw = Screen_GetGameWidth(), gh = Screen_GetGameHeight();
@@ -154,11 +156,21 @@ static bool hit_region_clicked(const SDL_Event *event, int x1, int y1, int x2, i
 	return gx >= x1 && gx <= x2 && gy >= y1 && gy <= y2;
 }
 
+/* The same for what the game draws (also through the cockpit view) */
+static bool hit_game_region_clicked(const SDL_Event *event, int x1, int y1, int x2, int y2)
+{
+	int gx, gy;
+	if (!Screen_WindowToGame(event->button.x, event->button.y, &gx, &gy))
+		return false;
+	gy = gy * 240 / 200;
+	return gx >= x1 && gx <= x2 && gy >= y1 && gy <= y2;
+}
+
 /* Work around the original game's system map left click glitch: the
  * system view icon sends F2 instead. */
 static bool systemview_button(const SDL_Event *event)
 {
-	if (event->button.button != SDL_BUTTON_LEFT || !hit_region_clicked(event, 18, 226, 31, 240))
+	if (event->button.button != SDL_BUTTON_LEFT || !hit_game_region_clicked(event, 18, 226, 31, 240))
 		return false;
 	SDL_Keysym key = {.scancode = SDL_SCANCODE_F2, .sym = SDLK_F2};
 	Keymap_KeyDown(&key);
@@ -198,6 +210,8 @@ void Main_EventHandler(void)
 		/* ImGui wants window units; everything below lays out in pixels */
 		Screen_MouseToPixels(&event);
 		if (freecam_handle_event(&event))
+			continue;
+		if (gamepad_handle_event(&event))
 			continue;
 
 		if ((event.type == SDL_FINGERDOWN || event.type == SDL_FINGERUP || event.type == SDL_FINGERMOTION) &&
@@ -268,6 +282,7 @@ void Main_EventHandler(void)
 	}
 	if (toggle_touch_controls)
 		touch_input_tick();
+	gamepad_update();
 	settings_poll(); /* writes glfrontier.cfg if a setting changed */
 }
 
@@ -338,6 +353,7 @@ static void main_init(void)
 	}
 
 	Screen_Init();
+	gamepad_init();
 	Init680x0();
 #if FE2_USE_MODDED
 	custom_ships_install(); /* tools/fe2ShipBuilder/custom_ships/NNN.fe2m, see custom_ships.h */
@@ -354,6 +370,7 @@ static void main_init(void)
 
 static void main_uninit(void)
 {
+	gamepad_shutdown();
 	Audio_UnInit();
 	Screen_UnInit();
 	SDL_Quit();

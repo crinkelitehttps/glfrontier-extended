@@ -1,8 +1,8 @@
 /*
  * settings.h - the player's settings, kept across restarts in a small text
  * file (settings.c): aspect ratio, renderer, fullscreen, free camera
- * options, saves for the unmodded game, emulator speed and hidden touch
- * pads.
+ * options, saves for the unmodded game, emulator speed, hidden touch
+ * pads, the cockpit view and head tracking.
  */
 #ifndef SETTINGS_H
 #define SETTINGS_H

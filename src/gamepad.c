@@ -1,0 +1,681 @@
+/*
+ * gamepad.c - see gamepad.h. The binding format follows the F-19 project's
+ * gamepad.cfg (native/src/host/gamepad.cpp), without its VR controllers.
+ */
+#include <ctype.h>
+#include <math.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "gamepad.h"
+#include "game_state.h"
+#include "gl/gl_cockpit.h"
+#include "headtrack.h"
+#include "host.h"
+#include "keymap.h"
+#include "main.h"
+
+/* The built-in bindings, also written out as gamepad.cfg */
+static const char DEFAULT_CFG[] =
+	"# GLFrontier gamepad bindings (Xbox layout names; other controllers map\n"
+	"# onto the same buttons by position).\n"
+	"#\n"
+	"# Delete this file to get the defaults back.\n"
+	"#\n"
+	"# One binding per line:   [shift1|shift2] <control> <action>\n"
+	"# A control may have several lines; '#' starts a comment.\n"
+	"#\n"
+	"# Shift layers: a control bound to `shift1` or `shift2` is held to switch\n"
+	"# key bindings to the ones prefixed with that shift (and off the\n"
+	"# unprefixed ones). Holding both reaches neither. The layer counts when a\n"
+	"# control is pressed. Axis bindings (steer, look) act whatever the shifts,\n"
+	"# unless the axis has one prefixed with the shift being held.\n"
+	"#\n"
+	"# Controls (SDL names):\n"
+	"#   buttons   a b x y back guide start leftstick rightstick\n"
+	"#             leftshoulder rightshoulder dpup dpdown dpleft dpright\n"
+	"#             misc1 paddle1 paddle2 paddle3 paddle4 touchpad\n"
+	"#   axes      leftx lefty rightx righty lefttrigger righttrigger\n"
+	"#   half axes leftx- leftx+ lefty- lefty+ ... (- is left / up), usable as\n"
+	"#             buttons; the triggers work as buttons too\n"
+	"#\n"
+	"# Actions:\n"
+	"#   steer-x, steer-y [invert]  the ship's steering (full axes only):\n"
+	"#                              x turns (rolls with Elite controls), y pitches\n"
+	"#   look-x, look-y [invert]    look around in the cockpit (springs back)\n"
+	"#   key <key>                  a keyboard key while held, with optional\n"
+	"#                              modifiers: shift+f1, ctrl+k\n"
+	"#   cycle <key> <key> ...      each press sends the next key in turn\n"
+	"#   shift1, shift2             hold for that shift layer\n"
+	"#   recenter                   head tracking: the current pose is ahead\n"
+	"#   cockpit                    cockpit view on / off (also Ctrl-K)\n"
+	"#   Key names as SDL spells them: a-z 0-9 f1-f10 = - , . / ; return space\n"
+	"#   escape tab backspace up down left right home end pageup pagedown\n"
+	"#   insert delete \"left shift\" \"right shift\" (aliases: enter esc lshift\n"
+	"#   rshift pgup pgdn ins del)\n"
+	"#\n"
+	"# Settings:\n"
+	"#   deadzone 0.15              stick deadzone (fraction of full travel)\n"
+	"#   threshold 0.5              how far an axis must go to act as a button\n"
+	"#   look-yaw 100               look-around range, degrees\n"
+	"#   look-pitch 60\n"
+	"\n"
+	"deadzone   0.15\n"
+	"threshold  0.5\n"
+	"look-yaw   100\n"
+	"look-pitch 60\n"
+	"\n"
+	"# ---- Flying\n"
+	"leftx          steer-x\n"
+	"lefty          steer-y invert      # push forward to dive (drop invert to climb)\n"
+	"rightx         look-x              # look around (springs back)\n"
+	"righty         look-y\n"
+	"righttrigger   key return          # throttle up (hold)\n"
+	"lefttrigger    key rshift          # throttle down (hold)\n"
+	"a              key space           # fire\n"
+	"b              key f1              # flight view: front, rear, turrets, external\n"
+	"y              cockpit             # cockpit view on / off\n"
+	"start          key escape          # pause\n"
+	"back           recenter            # head tracking: this pose is straight ahead\n"
+	"rightstick     recenter\n"
+	"dpup           key =               # zoom in (maps, external view)\n"
+	"dpdown         key -               # zoom out\n"
+	"\n"
+	"# ---- Left shoulder held: the console's function keys, laid out like\n"
+	"# the panel (F1-F4 on the left, F6-F10 on the right)\n"
+	"leftshoulder   shift1\n"
+	"shift1 dpleft  key f1\n"
+	"shift1 dpup    key f2\n"
+	"shift1 dpright key f3\n"
+	"shift1 dpdown  key f4\n"
+	"shift1 back    key f5\n"
+	"shift1 x       key f6\n"
+	"shift1 y       key f7\n"
+	"shift1 b       key f8\n"
+	"shift1 a       key f9\n"
+	"shift1 start   key f10\n"
+	"\n"
+	"# ---- Right shoulder held: time acceleration\n"
+	"rightshoulder  shift2\n"
+	"shift2 dpdown  key shift+f1        # normal time\n"
+	"shift2 dpleft  key shift+f2\n"
+	"shift2 dpup    key shift+f3\n"
+	"shift2 dpright key shift+f4\n"
+	"shift2 y       key shift+f5        # fastest\n";
+
+/* =========================================================================
+ * Bindings
+ * ========================================================================= */
+typedef enum
+{
+	SRC_BUTTON,
+	SRC_AXIS
+} Source;
+
+typedef struct
+{
+	Source source;
+	int index; /* SDL_GameControllerButton or SDL_GameControllerAxis */
+	int half;  /* axis as a button: -1 / +1; 0 the full axis (or a trigger) */
+} Control;
+
+typedef enum
+{
+	ACT_STEER_X,
+	ACT_STEER_Y,
+	ACT_LOOK_X,
+	ACT_LOOK_Y,
+	ACT_KEY,
+	ACT_CYCLE,
+	ACT_SHIFT,
+	ACT_RECENTER,
+	ACT_COCKPIT
+} Action;
+
+#define MAX_CHORDS 8
+
+typedef struct
+{
+	SDL_Keycode key;
+	bool shift, ctrl;
+} Chord;
+
+typedef struct
+{
+	Control control;
+	Action action;
+	bool invert;
+	Chord keys[MAX_CHORDS];
+	int n_keys;
+	int step;  /* cycle: the next key */
+	int layer; /* key, cycle, recenter, cockpit, steer, look: shift layer (0 none, 1, 2); shift: which */
+	int axis_shadowed; /* steer / look without a layer: bit n set if shift n has its own binding */
+
+	bool was_down;  /* the control, last update */
+	bool held;      /* key: sent down */
+	Chord sent;     /* the chord sent down */
+} Binding;
+
+#define MAX_BINDINGS 128
+
+static Binding bindings[MAX_BINDINGS];
+static int n_bindings;
+static float deadzone = 0.15f, threshold = 0.5f;
+static float look_yaw = 100.0f, look_pitch = 60.0f;
+
+static SDL_GameController *pad;
+static float look[2];
+static bool steering; /* wrote steering last update */
+
+/* ---- parsing ------------------------------------------------------------ */
+static bool parse_control(const char *name, Control *c)
+{
+	char buf[64];
+	snprintf(buf, sizeof buf, "%s", name);
+	size_t len = strlen(buf);
+	c->half = 0;
+	if (len > 1 && (buf[len - 1] == '-' || buf[len - 1] == '+'))
+	{
+		c->half = buf[len - 1] == '-' ? -1 : 1;
+		buf[len - 1] = 0;
+	}
+	SDL_GameControllerAxis axis = SDL_GameControllerGetAxisFromString(buf);
+	if (axis != SDL_CONTROLLER_AXIS_INVALID)
+	{
+		c->source = SRC_AXIS;
+		c->index = axis;
+		return true;
+	}
+	SDL_GameControllerButton button = SDL_GameControllerGetButtonFromString(buf);
+	if (button != SDL_CONTROLLER_BUTTON_INVALID && c->half == 0)
+	{
+		c->source = SRC_BUTTON;
+		c->index = button;
+		return true;
+	}
+	return false;
+}
+
+static bool parse_chord(const char *text, Chord *chord)
+{
+	static const struct
+	{
+		const char *alias, *name;
+	} aliases[] = {{"enter", "Return"},   {"esc", "Escape"},     {"lshift", "Left Shift"}, {"rshift", "Right Shift"},
+				   {"pgup", "PageUp"},    {"pgdn", "PageDown"}, {"ins", "Insert"},        {"del", "Delete"},
+				   {"lctrl", "Left Ctrl"}, {"alt", "Left Alt"}};
+	char buf[64];
+	snprintf(buf, sizeof buf, "%s", text);
+	char *name = buf;
+	chord->shift = chord->ctrl = false;
+	for (;;)
+	{
+		if (!SDL_strncasecmp(name, "shift+", 6) && name[6])
+		{
+			chord->shift = true;
+			name += 6;
+		}
+		else if (!SDL_strncasecmp(name, "ctrl+", 5) && name[5])
+		{
+			chord->ctrl = true;
+			name += 5;
+		}
+		else
+			break;
+	}
+	for (size_t i = 0; i < sizeof aliases / sizeof aliases[0]; i++)
+		if (!SDL_strcasecmp(name, aliases[i].alias))
+			name = (char *)aliases[i].name;
+	chord->key = SDL_GetKeyFromName(name);
+	return chord->key != SDLK_UNKNOWN;
+}
+
+/* Splits a line into words; a quoted word may hold spaces. Returns the count. */
+static int split(char *line, char **words, int max)
+{
+	int n = 0;
+	char *p = line;
+	while (*p && n < max)
+	{
+		while (isspace((unsigned char)*p))
+			p++;
+		if (!*p)
+			break;
+		if (*p == '"')
+		{
+			words[n++] = ++p;
+			while (*p && *p != '"')
+				p++;
+		}
+		else
+		{
+			words[n++] = p;
+			while (*p && !isspace((unsigned char)*p))
+				p++;
+		}
+		if (*p)
+			*p++ = 0;
+	}
+	return n;
+}
+
+static bool is_axis_action(Action a)
+{
+	return a == ACT_STEER_X || a == ACT_STEER_Y || a == ACT_LOOK_X || a == ACT_LOOK_Y;
+}
+
+static bool parse_line(char *line, const char *source, int line_no)
+{
+	char *hash = strchr(line, '#');
+	if (hash)
+		*hash = 0;
+	char *w[16];
+	int n = split(line, w, 16);
+	if (n == 0)
+		return true;
+
+	/* settings */
+	if (n == 2)
+	{
+		float *setting = !strcmp(w[0], "deadzone")	  ? &deadzone
+						 : !strcmp(w[0], "threshold")  ? &threshold
+						 : !strcmp(w[0], "look-yaw")   ? &look_yaw
+						 : !strcmp(w[0], "look-pitch") ? &look_pitch
+													   : NULL;
+		if (setting)
+		{
+			*setting = (float)atof(w[1]);
+			return true;
+		}
+	}
+
+	Binding b;
+	memset(&b, 0, sizeof b);
+	int i = 0;
+	if (!strcmp(w[0], "shift1") || !strcmp(w[0], "shift2"))
+	{
+		b.layer = w[0][5] - '0';
+		i++;
+	}
+	if (i + 2 > n || !parse_control(w[i], &b.control))
+	{
+		log_printf("%s:%d: unknown control '%s'\n", source, line_no, i < n ? w[i] : "");
+		return false;
+	}
+	const char *act = w[i + 1];
+	int args = i + 2;
+	bool full_axis = b.control.source == SRC_AXIS && b.control.half == 0;
+
+	if (!strcmp(act, "steer-x") || !strcmp(act, "steer-y") || !strcmp(act, "look-x") || !strcmp(act, "look-y"))
+	{
+		b.action = !strcmp(act, "steer-x")	 ? ACT_STEER_X
+				   : !strcmp(act, "steer-y") ? ACT_STEER_Y
+				   : !strcmp(act, "look-x")	 ? ACT_LOOK_X
+											 : ACT_LOOK_Y;
+		if (!full_axis)
+		{
+			log_printf("%s:%d: %s needs a full axis\n", source, line_no, act);
+			return false;
+		}
+		b.invert = args < n && !strcmp(w[args], "invert");
+	}
+	else if (!strcmp(act, "key") || !strcmp(act, "cycle"))
+	{
+		b.action = act[0] == 'k' ? ACT_KEY : ACT_CYCLE;
+		for (int k = args; k < n && b.n_keys < MAX_CHORDS; k++)
+		{
+			if (!parse_chord(w[k], &b.keys[b.n_keys]))
+			{
+				log_printf("%s:%d: unknown key '%s'\n", source, line_no, w[k]);
+				return false;
+			}
+			b.n_keys++;
+		}
+		if (b.n_keys == 0 || (b.action == ACT_KEY && b.n_keys != 1))
+		{
+			log_printf("%s:%d: %s takes %s\n", source, line_no, act, b.action == ACT_KEY ? "one key" : "keys");
+			return false;
+		}
+	}
+	else if (!strcmp(act, "shift1") || !strcmp(act, "shift2"))
+	{
+		if (b.layer)
+		{
+			log_printf("%s:%d: a shift can't be shifted\n", source, line_no);
+			return false;
+		}
+		b.action = ACT_SHIFT;
+		b.layer = act[5] - '0';
+	}
+	else if (!strcmp(act, "recenter") || !strcmp(act, "cockpit"))
+	{
+		b.action = act[0] == 'r' ? ACT_RECENTER : ACT_COCKPIT;
+	}
+	else
+	{
+		log_printf("%s:%d: unknown action '%s'\n", source, line_no, act);
+		return false;
+	}
+
+	if (n_bindings >= MAX_BINDINGS)
+	{
+		log_printf("%s:%d: too many bindings\n", source, line_no);
+		return false;
+	}
+	bindings[n_bindings++] = b;
+	return true;
+}
+
+static void mark_shadowed(void)
+{
+	for (int i = 0; i < n_bindings; i++)
+	{
+		Binding *b = &bindings[i];
+		if (!is_axis_action(b->action) || b->layer)
+			continue;
+		for (int j = 0; j < n_bindings; j++)
+		{
+			const Binding *o = &bindings[j];
+			if (o->layer && is_axis_action(o->action) && o->control.index == b->control.index &&
+				o->control.source == b->control.source)
+				b->axis_shadowed |= 1 << o->layer;
+		}
+	}
+}
+
+static bool load_text(const char *text, const char *source)
+{
+	n_bindings = 0;
+	bool ok = true;
+	int line_no = 0;
+	const char *p = text;
+	while (*p)
+	{
+		const char *end = strchr(p, '\n');
+		size_t len = end ? (size_t)(end - p) : strlen(p);
+		char line[256];
+		snprintf(line, sizeof line, "%.*s", (int)(len < sizeof line ? len : sizeof line - 1), p);
+		line_no++;
+		ok = parse_line(line, source, line_no) && ok;
+		p += len;
+		if (*p)
+			p++;
+	}
+	mark_shadowed();
+	return ok;
+}
+
+static void load_bindings(void)
+{
+	FILE *f = fopen(GAMEPAD_FILE, "rb");
+	if (!f)
+	{
+		load_text(DEFAULT_CFG, "built-in gamepad bindings");
+		f = fopen(GAMEPAD_FILE, "wb");
+		if (f)
+		{
+			fputs(DEFAULT_CFG, f);
+			fclose(f);
+			log_printf("Gamepad: wrote the default bindings to %s\n", GAMEPAD_FILE);
+		}
+		return;
+	}
+	fseek(f, 0, SEEK_END);
+	long size = ftell(f);
+	fseek(f, 0, SEEK_SET);
+	char *text = malloc((size_t)size + 1);
+	if (!text)
+	{
+		fclose(f);
+		return;
+	}
+	size_t got = fread(text, 1, (size_t)size, f);
+	text[got] = 0;
+	fclose(f);
+	if (!load_text(text, GAMEPAD_FILE))
+		log_printf("Gamepad: some lines of %s were skipped\n", GAMEPAD_FILE);
+	else
+		log_printf("Gamepad: %d bindings from %s\n", n_bindings, GAMEPAD_FILE);
+	free(text);
+}
+
+/* =========================================================================
+ * Controllers
+ * ========================================================================= */
+void gamepad_init(void)
+{
+	if (SDL_InitSubSystem(SDL_INIT_GAMECONTROLLER) < 0)
+	{
+		log_printf("Gamepad: %s\n", SDL_GetError());
+		return;
+	}
+	load_bindings();
+}
+
+void gamepad_shutdown(void)
+{
+	if (pad)
+		SDL_GameControllerClose(pad);
+	pad = NULL;
+}
+
+bool gamepad_connected(void)
+{
+	return pad != NULL;
+}
+
+bool gamepad_handle_event(const SDL_Event *event)
+{
+	switch (event->type)
+	{
+	case SDL_CONTROLLERDEVICEADDED:
+		if (!pad)
+		{
+			pad = SDL_GameControllerOpen(event->cdevice.which);
+			if (pad)
+				log_printf("Gamepad: %s\n", SDL_GameControllerName(pad));
+		}
+		return true;
+	case SDL_CONTROLLERDEVICEREMOVED:
+		if (pad && SDL_JoystickInstanceID(SDL_GameControllerGetJoystick(pad)) == event->cdevice.which)
+		{
+			SDL_GameControllerClose(pad);
+			pad = NULL;
+			log_printf("Gamepad: disconnected\n");
+			/* another one may still be plugged in */
+			for (int i = 0; i < SDL_NumJoysticks() && !pad; i++)
+				if (SDL_IsGameController(i))
+					pad = SDL_GameControllerOpen(i);
+		}
+		return true;
+	case SDL_CONTROLLERAXISMOTION:
+	case SDL_CONTROLLERBUTTONDOWN:
+	case SDL_CONTROLLERBUTTONUP:
+		return true; /* read by polling in gamepad_update */
+	}
+	return false;
+}
+
+/* -1..1, with the deadzone taken out (full axes) */
+static float axis_value(const Control *c)
+{
+	float v = SDL_GameControllerGetAxis(pad, (SDL_GameControllerAxis)c->index) / 32767.0f;
+	if (v < -1.0f)
+		v = -1.0f;
+	float a = fabsf(v);
+	if (a < deadzone)
+		return 0.0f;
+	return copysignf((a - deadzone) / (1.0f - deadzone), v);
+}
+
+static bool control_down(const Control *c)
+{
+	if (c->source == SRC_BUTTON)
+		return SDL_GameControllerGetButton(pad, (SDL_GameControllerButton)c->index) != 0;
+	float v = SDL_GameControllerGetAxis(pad, (SDL_GameControllerAxis)c->index) / 32767.0f;
+	if (c->half < 0)
+		return v < -threshold;
+	return v > threshold; /* + half, or a trigger */
+}
+
+/* ---- keys --------------------------------------------------------------- */
+static void send(SDL_Keycode key, Uint16 mod, bool down)
+{
+	SDL_Keysym ks;
+	memset(&ks, 0, sizeof ks);
+	ks.sym = key;
+	ks.scancode = SDL_GetScancodeFromKey(key);
+	ks.mod = mod;
+	if (down)
+		Keymap_KeyDown(&ks);
+	else
+		Keymap_KeyUp(&ks);
+}
+
+static void chord(const Chord *c, bool down)
+{
+	if (c->ctrl) /* the emulator's Ctrl shortcuts act on the press */
+	{
+		if (down)
+			send(c->key, KMOD_LCTRL, true);
+		return;
+	}
+	if (down)
+	{
+		if (c->shift)
+			send(SDLK_LSHIFT, 0, true);
+		send(c->key, 0, true);
+	}
+	else
+	{
+		send(c->key, 0, false);
+		if (c->shift)
+			send(SDLK_LSHIFT, 0, false);
+	}
+}
+
+static void release_all(void)
+{
+	for (int i = 0; i < n_bindings; i++)
+	{
+		Binding *b = &bindings[i];
+		if (b->held)
+			chord(&b->sent, false);
+		b->held = false;
+		b->was_down = false;
+	}
+}
+
+/* ---- per frame ---------------------------------------------------------- */
+static int current_layer(void)
+{
+	bool s[3] = {false, false, false};
+	for (int i = 0; i < n_bindings; i++)
+		if (bindings[i].action == ACT_SHIFT && control_down(&bindings[i].control))
+			s[bindings[i].layer] = true;
+	if (s[1] && s[2])
+		return -1;
+	return s[1] ? 1 : s[2] ? 2 : 0;
+}
+
+static void write_steering(float x, float y)
+{
+	bool on = x != 0.0f || y != 0.0f;
+	if (!on && !steering)
+		return; /* leave the keyboard's steering alone */
+	steering = on;
+	if (!game_player_ship())
+		return;
+	wrword(GAME_A6 + 14508, (int)lrintf(x * 32767.0f));
+	wrword(GAME_A6 + 14510, (int)lrintf(y * 32767.0f));
+}
+
+void gamepad_update(void)
+{
+	float steer[2] = {0, 0};
+	look[0] = look[1] = 0;
+	if (!pad)
+	{
+		release_all();
+		write_steering(0, 0);
+		return;
+	}
+
+	int layer = current_layer();
+	for (int i = 0; i < n_bindings; i++)
+	{
+		Binding *b = &bindings[i];
+		if (is_axis_action(b->action))
+		{
+			bool acts = b->layer ? b->layer == layer : !(layer > 0 && (b->axis_shadowed & (1 << layer)));
+			if (!acts)
+				continue;
+			float v = axis_value(&b->control);
+			if (b->invert)
+				v = -v;
+			switch (b->action)
+			{
+			case ACT_STEER_X:
+				steer[0] += v;
+				break;
+			case ACT_STEER_Y:
+				steer[1] += v;
+				break;
+			case ACT_LOOK_X:
+				look[0] += v;
+				break;
+			default:
+				look[1] += v;
+				break;
+			}
+			continue;
+		}
+
+		bool down = control_down(&b->control);
+		bool pressed = down && !b->was_down;
+		b->was_down = down;
+		if (b->action == ACT_SHIFT)
+			continue;
+
+		if (b->held && !down)
+		{
+			chord(&b->sent, false);
+			b->held = false;
+		}
+		if (!pressed || b->layer != layer)
+			continue;
+		switch (b->action)
+		{
+		case ACT_KEY:
+		case ACT_CYCLE:
+			b->sent = b->keys[b->action == ACT_CYCLE ? b->step : 0];
+			if (b->action == ACT_CYCLE)
+				b->step = (b->step + 1) % b->n_keys;
+			chord(&b->sent, true);
+			b->held = true;
+			break;
+		case ACT_RECENTER:
+			headtrack_recenter();
+			break;
+		case ACT_COCKPIT:
+			cockpit_enabled = !cockpit_enabled;
+			break;
+		default:
+			break;
+		}
+	}
+
+	for (int i = 0; i < 2; i++)
+	{
+		steer[i] = fmaxf(-1.0f, fminf(1.0f, steer[i]));
+		look[i] = fmaxf(-1.0f, fminf(1.0f, look[i]));
+	}
+	write_steering(steer[0], steer[1]);
+}
+
+void gamepad_look(float *x, float *y)
+{
+	*x = look[0] * look_yaw * 0.5f;
+	*y = look[1] * look_pitch * 0.5f;
+}

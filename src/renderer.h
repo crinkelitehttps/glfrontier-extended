@@ -72,6 +72,9 @@ void Screen_MouseToPixels(union SDL_Event *event);
 int Screen_GetGameOffsetX(void);
 int Screen_GetGameOffsetY(void);
 int Screen_GetGameWidth(void);
+/* Window pixel -> emulated 320x200 screen pixel, through the cockpit when
+ * it is on; false if it points at nothing */
+bool Screen_WindowToGame(int wx, int wy, int *gx, int *gy);
 int Screen_GetGameHeight(void);
 
 /* ---- host calls from the 68k code (see hostcall.c) ---------------------- */

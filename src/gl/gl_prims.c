@@ -10,6 +10,7 @@
 #include "gl_api.h"
 #include "glutess.h"
 
+#include "gl_cockpit.h"
 #include "gl_draw.h"
 #include "gl_scene.h"
 #include "gl_prims.h"
@@ -541,14 +542,14 @@ void draw_line_2d(const void *payload)
 {
 	const PLine2D *p = payload;
 	mat4 saved_proj = *gd_projection();
-	mat4 ortho = mat4_ortho(0, 320, 0, 200, -1, 1);
+	mat4 view = cockpit_view_pixel_projection();
 
-	gd_set_viewport(GD_VP_GAME);
-	gd_set_projection(&ortho);
+	gd_set_viewport(GD_VP_VIEW3D);
+	gd_set_projection(&view);
 	gd_push();
 	gd_identity();
 	gd_color3ub(0, 255, 0); /* the palette colour in p->col was never used */
-	gd_line2(p->x1, 199 - p->y1, p->x2, 199 - p->y2);
+	gd_line2(p->x1, p->y1, p->x2, p->y2);
 	gd_pop();
 	gd_set_projection(&saved_proj);
 	gd_set_viewport(GD_VP_VIEW3D);

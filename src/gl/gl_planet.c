@@ -6,6 +6,7 @@
 #include <stdlib.h>
 
 #include "gl_api.h"
+#include "gl_cockpit.h"
 #include "gl_draw.h"
 #include "gl_fill2d.h"
 #include "gl_planet.h"
@@ -319,8 +320,18 @@ void draw_planet(const void *payload)
 		return;
 	}
 
+	/* The sphere shader takes a plain lens (no rotation): in the cockpit,
+	 * turn the planet by the head instead */
+	mat4 lens = *gd_projection(), head = mat4_identity();
+	if (cockpit_active())
+		cockpit_world_split(&lens, &head);
+	float view_pos[3], pos[3], light[3];
+	vec3i_to_f(p->pos, view_pos);
+	mat4_xform_dir(&head, view_pos, pos);
+	mat4_xform_dir(&head, p->light, light);
+
 	double r = p->radius;
-	double cx = p->pos.x / r, cy = p->pos.y / r, cz = p->pos.z / r;
+	double cx = pos[0] / r, cy = pos[1] / r, cz = pos[2] / r;
 
 	float rect[4];
 	if (!screen_rect(p, rect))
@@ -330,7 +341,7 @@ void draw_planet(const void *payload)
 	if (!pass)
 		return;
 	memcpy(pass->rect, rect, sizeof(rect));
-	const mat4 *pr = gd_projection();
+	const mat4 *pr = &lens;
 	pass->proj[0] = pr->m[0];
 	pass->proj[1] = pr->m[5];
 	pass->proj[2] = pr->m[8];
@@ -341,7 +352,7 @@ void draw_planet(const void *payload)
 	pass->centre[2] = (float)cz;
 	pass->c = (float)(cx * cx + cy * cy + cz * cz - 1.0);
 
-	memcpy(pass->light, p->light, sizeof(pass->light));
+	memcpy(pass->light, light, sizeof(pass->light));
 	vec3_normalize(pass->light);
 	gl_rgb444_to_f(p->light_col, pass->diffuse);
 	gl_rgb444_to_f(p->obj_col, pass->ambient);

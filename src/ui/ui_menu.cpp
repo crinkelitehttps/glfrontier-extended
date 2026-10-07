@@ -25,6 +25,9 @@ extern "C"
 #include "custom_ships.h"
 #include "mods.h"
 #include "freecam.h"
+#include "gamepad.h"
+#include "gl/gl_cockpit.h"
+#include "headtrack.h"
 }
 
 namespace
@@ -201,6 +204,27 @@ void page_settings()
 	{
 		Screen_SetLetterboxMode(!keep_aspect);
 	}
+
+	ui_heading("Cockpit view (Ctrl-K)");
+	wrapped_checkbox("3D cockpit in the front view", &cockpit_enabled);
+	ImGui::TextWrapped("Field of view (vertical)");
+	ImGui::SetNextItemWidth(-FLT_MIN);
+	ImGui::SliderInt("##fov", &cockpit_fov, 30, 120, "%d degrees");
+
+	ui_heading("Head tracking");
+	wrapped_checkbox("OpenTrack, UDP over network", &headtrack_enabled);
+	ImGui::TextWrapped("Port (default %d)", HEADTRACK_DEFAULT_PORT);
+	ImGui::SetNextItemWidth(-FLT_MIN);
+	ImGui::InputInt("##port", &headtrack_port, 0, 0);
+	if (headtrack_port < 1 || headtrack_port > 65535)
+		headtrack_port = HEADTRACK_DEFAULT_PORT;
+	ImGui::TextWrapped("%s", !headtrack_enabled ? "Off" : headtrack_receiving() ? "Receiving" : "Waiting for data");
+	if (ui_button("Recentre (Ctrl-C)"))
+		headtrack_recenter();
+
+	ui_heading("Gamepad");
+	ImGui::TextWrapped("%s", gamepad_connected() ? "Connected" : "None connected");
+	ImGui::TextWrapped("Bindings: %s, beside the saves", GAMEPAD_FILE);
 }
 
 void page_cheats()
