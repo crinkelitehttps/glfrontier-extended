@@ -18,11 +18,34 @@
  * Coordinates are 3D view pixels: x 0..320, y 0..168 downwards. The copy
  * is the same words from the first edge on, with the fill's colour id
  * replaced by its rgb444 value.
+ *
+ * Those shapes only fit the view the game drew them for, so the cockpit's
+ * turned passes (gl_cockpit.c) would each draw slightly different bands that
+ * jog where the passes meet. There the bands are drawn in 3D instead, as
+ * rings round the planet (AtmosBand): a hook in fe2.s (Lcockpit_band) tells
+ * Nu_AtmosBand each band's scale and colour as the game builds it,
+ * Nu_PutPlanet, which comes after the bands, says which planet they are
+ * round, and scene_draw has every pass draw them (atmos_draw_bands).
+ *
+ * The game makes each band by scaling the previous band's outer edge (the
+ * planet's horizon arc for the first) by the band's scale about a pivot
+ * towards the planet's centre, 2 * $600 = 3072 view pixels away (the code
+ * before Lcockpit_band's hook; landed on Merlin the bands are 48 view
+ * pixels deep for scales multiplying to 1.0151, so 3190, and from orbit
+ * just as deep). Band n's outer edge is then (S - 1) * 3072 view pixels
+ * beyond the planet's edge, S being the product of the scales so far: in
+ * angles, (S - 1) * 3072 / f radians, f being the game's focal length in
+ * view pixels.
  */
+#include <math.h>
+
+#include "gl_cockpit.h"
 #include "gl_fill2d.h"
+#include "gl_planet.h"
 #include "gl_scene.h"
 #include "m68000.h"
 #include "host.h"
+#include "renderer.h"
 
 #define ADDR_DYN_COLS 0x56 /* dynamic colour table */
 #define TREE_HEADER   12   /* z, two child pointers */
@@ -35,12 +58,118 @@
 #define BAND_OPS_MAX 64
 #define ARENA_WORDS  (1 << 16)
 
+#define SCALE_ONE    16384.0f /* a band's scale word for 1.0 */
+#define PIVOT_MAX    3072.0f  /* furthest the game puts its pivot, view pixels */
+#define BANDS_MAX    256      /* a frame's, all passes */
+#define PLANETS_MAX  16
+
 static int16_t arena[ARENA_WORDS];
 static int arena_used;
+
+/* This frame's bands in 3D (cockpit only). Not every pass the game draws
+ * makes them (it only does when the planet's horizon is in that pass's
+ * view), so each planet's are kept once, from the first pass that made
+ * them, round its centre in view space, and every pass draws them all
+ * before anything else (the game puts them at the very back). */
+typedef struct
+{
+	float inner, outer; /* edges: the products of the scales before it and with it */
+	int rgb;            /* rgb444 */
+	int planet;         /* in planets[], -1 until its planet is known */
+	bool draw;          /* false: another pass's copy of a band kept already */
+} AtmosBand;
+
+typedef struct
+{
+	float centre[3]; /* view space */
+	float radius;
+} AtmosPlanet;
+
+static AtmosBand bands[BANDS_MAX];
+static int n_bands, first_pending;
+static AtmosPlanet planets[PLANETS_MAX];
+static int n_planets;
+static float scale_so_far = 1.0f;
 
 void soft_nodes_reset(void)
 {
 	arena_used = 0;
+	n_bands = first_pending = n_planets = 0;
+	scale_so_far = 1.0f;
+}
+
+static int dyn_colour(int id)
+{
+	return STMemory_ReadWord(ADDR_DYN_COLS + id + 2) & 0xfff;
+}
+
+void Nu_AtmosBand(void)
+{
+	float scale = (int16_t)STMemory_ReadWord(GetReg(REG_A3) + 202) / SCALE_ONE;
+	if (n_bands >= BANDS_MAX)
+		return;
+	AtmosBand *b = &bands[n_bands++];
+	b->inner = scale_so_far;
+	scale_so_far *= scale;
+	b->outer = scale_so_far;
+	b->rgb = dyn_colour(GetReg(REG_D6) & 0xffff);
+	b->planet = -1;
+	b->draw = false;
+	SoftNode *s = scene_current_soft_node();
+	if (s)
+		s->shell = b;
+}
+
+void atmos_place_bands(const float centre[3], float radius)
+{
+	if (first_pending < n_bands && radius > 0.0f)
+	{
+		/* the same planet seen by an earlier pass has the same radius */
+		int p = 0;
+		while (p < n_planets && planets[p].radius != radius)
+			p++;
+		bool known = p < n_planets;
+		if (!known && n_planets < PLANETS_MAX)
+		{
+			cockpit_pass_to_view(centre, planets[p].centre);
+			planets[p].radius = radius;
+			n_planets++;
+		}
+		if (p < n_planets)
+			for (int i = first_pending; i < n_bands; i++)
+			{
+				bands[i].planet = p;
+				bands[i].draw = !known;
+			}
+	}
+	first_pending = n_bands;
+	scale_so_far = 1.0f;
+}
+
+void atmos_draw_bands(void)
+{
+	if (!cockpit_active())
+		return;
+	double f = FILL2D_VIEW_H * 0.5 / tan(CLASSIC_FOV * GLM_PI / 360.0);
+	double k = PIVOT_MAX / f;
+	for (int i = 0; i < n_bands; i++)
+	{
+		const AtmosBand *b = &bands[i];
+		if (!b->draw)
+			continue;
+		const AtmosPlanet *p = &planets[b->planet];
+		double c[3] = {p->centre[0], p->centre[1], p->centre[2]};
+		double dist = sqrt(c[0] * c[0] + c[1] * c[1] + c[2] * c[2]);
+		if (dist <= 0.0)
+			continue;
+		double a = asin(fmin((double)p->radius / dist, 1.0));
+		double outer = a + (b->outer - 1.0) * k;
+		/* the first band reaches in to the planet's edge: no inner edge, the
+		 * planet is drawn over it */
+		double inner = b->inner > 1.0f ? a + (b->inner - 1.0) * k : 0.0;
+		planet_draw_shell(p->centre, outer >= GLM_PI ? -2.0f : (float)cos(outer),
+						  inner > 0.0 ? (float)cos(inner) : 2.0f, b->rgb);
+	}
 }
 
 /* Copies the band at p (just past its start word); false if it is not one */
@@ -59,7 +188,7 @@ static bool copy_band(uint32_t p, SoftNode *s)
 		p += 2 + args * 2;
 		if (op == OP_FILL)
 		{
-			arena[n - 1] = (int16_t)(STMemory_ReadWord(ADDR_DYN_COLS + arena[n - 1] + 2) & 0xfff);
+			arena[n - 1] = (int16_t)dyn_colour(arena[n - 1]);
 			arena_used = n;
 			s->band = start;
 			return true;
@@ -82,6 +211,9 @@ void draw_soft_node(const void *payload)
 {
 	const SoftNode *s = payload;
 	if (s->band < 0)
+		return;
+	/* drawn in 3D instead (atmos_draw_bands) */
+	if (s->shell && ((const AtmosBand *)s->shell)->planet >= 0 && cockpit_active())
 		return;
 
 	const int16_t *w = &arena[s->band];

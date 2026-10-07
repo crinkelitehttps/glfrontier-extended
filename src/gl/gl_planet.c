@@ -122,6 +122,10 @@ void Nu_PutPlanet(void)
 		p->rot[i] = STMemory_ReadWord(m + i * 2) / -32768.0f;
 
 	capture_list(p, words);
+
+	float centre[3];
+	vec3i_to_f(p->pos, centre);
+	atmos_place_bands(centre, p->radius);
 }
 
 /* =========================================================================
@@ -134,11 +138,15 @@ void Nu_PutPlanet(void)
  * landed. Everything is in units of the planet radius so the maths stays
  * precise in float even metres above a planet millions of units big.
  * ========================================================================= */
-static GLuint sphere_prog, quad_vao, quad_vbo;
+static GLuint sphere_prog, shell_prog, quad_vao, quad_vbo;
 static struct
 {
 	GLint rect, proj, centre, c, light_dir, diffuse, ambient;
 } us;
+static struct
+{
+	GLint rect, proj, dir, cos_edges, colour;
+} ush;
 
 static const char *VS_SPHERE =
 	"in vec2 aPos;\n"       /* unit quad 0..1 */
@@ -176,10 +184,29 @@ static const char *FS_SPHERE =
 	"  fragColor = vec4(clamp(uAmbient + l * uDiffuse, 0.0, 1.0), 1.0);\n"
 	"}\n";
 
+/* An atmosphere band: the directions between two angles from the planet's */
+static const char *FS_SHELL = "precision highp float;\n"
+							  "in vec3 vRay;\n"
+							  "uniform vec3 uDir;\n" /* to the planet's centre, eye space, unit */
+							  "uniform vec2 uCosEdges;\n" /* outer, inner */
+							  "uniform vec3 uColour;\n"
+							  "out vec4 fragColor;\n"
+							  "void main(){\n"
+							  "  float c = dot(normalize(vRay), uDir);\n"
+							  "  if (c < uCosEdges.x || c > uCosEdges.y) discard;\n"
+							  "  fragColor = vec4(uColour, 1.0);\n"
+							  "}\n";
+
 void gl_planet_init(void)
 {
 	static const char *const attribs[] = {"aPos"};
 	sphere_prog = gd_build_program(VS_SPHERE, FS_SPHERE, attribs, 1);
+	shell_prog = gd_build_program(VS_SPHERE, FS_SHELL, attribs, 1);
+	ush.rect = glGetUniformLocation(shell_prog, "uRect");
+	ush.proj = glGetUniformLocation(shell_prog, "uProj");
+	ush.dir = glGetUniformLocation(shell_prog, "uDir");
+	ush.cos_edges = glGetUniformLocation(shell_prog, "uCosEdges");
+	ush.colour = glGetUniformLocation(shell_prog, "uColour");
 	us.rect = glGetUniformLocation(sphere_prog, "uRect");
 	us.proj = glGetUniformLocation(sphere_prog, "uProj");
 	us.centre = glGetUniformLocation(sphere_prog, "uCentre");
@@ -204,6 +231,7 @@ void gl_planet_shutdown(void)
 	glDeleteBuffers(1, &quad_vbo);
 	glDeleteVertexArrays(1, &quad_vao);
 	glDeleteProgram(sphere_prog);
+	glDeleteProgram(shell_prog);
 }
 
 /* =========================================================================
@@ -314,7 +342,10 @@ void draw_planet(const void *payload)
 	if (p->radius <= 0.0f)
 		return;
 
-	if (p->list_ok)
+	/* The game's shape only fits the view it was made for: the cockpit's
+	 * turned passes would each draw a slightly different one, so there the
+	 * planet is the sphere, which every pass draws the same. */
+	if (p->list_ok && !cockpit_active())
 	{
 		draw_list(p);
 		return;
@@ -360,4 +391,51 @@ void draw_planet(const void *payload)
 	/* Further planet passes (features) go here, in draw order. The sphere
 	 * shader has the surface point n = t*d - centre; rotating it by p->rot
 	 * gives planet-local coordinates for texturing. */
+}
+
+typedef struct
+{
+	float proj[4];
+	float dir[3];
+	float cos_edges[2];
+	float colour[3];
+} ShellPass;
+
+static void planet_shell_pass(const void *data)
+{
+	const ShellPass *p = data;
+	static const float whole[4] = {-1, -1, 1, 1};
+	glUseProgram(shell_prog);
+	glUniform4fv(ush.rect, 1, whole);
+	glUniform4fv(ush.proj, 1, p->proj);
+	glUniform3fv(ush.dir, 1, p->dir);
+	glUniform2fv(ush.cos_edges, 1, p->cos_edges);
+	glUniform3fv(ush.colour, 1, p->colour);
+	glBindVertexArray(quad_vao);
+	glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+}
+
+void planet_draw_shell(const float centre[3], float cos_outer, float cos_inner, int rgb)
+{
+	mat4 lens = *gd_projection(), head = mat4_identity(), turned;
+	if (cockpit_active())
+	{
+		cockpit_world_split(&lens, &turned);
+		head = cockpit_head_rotation();
+	}
+	float dir[3];
+	mat4_xform_dir(&head, centre, dir);
+	vec3_normalize(dir);
+
+	ShellPass *pass = gd_custom(planet_shell_pass, sizeof *pass);
+	if (!pass)
+		return;
+	pass->proj[0] = lens.m[0];
+	pass->proj[1] = lens.m[5];
+	pass->proj[2] = lens.m[8];
+	pass->proj[3] = lens.m[9];
+	memcpy(pass->dir, dir, sizeof dir);
+	pass->cos_edges[0] = cos_outer;
+	pass->cos_edges[1] = cos_inner;
+	gl_rgb444_to_f(rgb, pass->colour);
 }

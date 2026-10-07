@@ -59,4 +59,12 @@ typedef struct
 void gl_planet_init(void);
 void gl_planet_shutdown(void);
 
+/* Fills the directions between acos(cos_inner) and acos(cos_outer) from a
+ * planet's centre (view space, not turned by the pass being drawn) with an
+ * rgb444 colour: an atmosphere band (gl_atmos.c). cos_inner > 1 for no
+ * inner edge, cos_outer < -1 for no outer one. */
+void planet_draw_shell(const float centre[3], float cos_outer, float cos_inner, int rgb);
+/* Says which planet the atmosphere bands just made are round (gl_atmos.c) */
+void atmos_place_bands(const float centre[3], float radius);
+
 #endif /* GL_PLANET_H */

@@ -122,13 +122,18 @@ void scene_end_pass(void);
  * the next pass, so it is copied out (gl_atmos.c) once the pass is over. */
 typedef struct
 {
-	uint32_t node; /* address in emulated RAM */
-	int32_t band;  /* the copy, -1 if none */
+	uint32_t node;       /* address in emulated RAM */
+	int32_t band;        /* the copy, -1 if none */
+	const void *shell;   /* its 3D version (gl_atmos.c), if any */
 } SoftNode;
+/* The current node's soft node, NULL if it has none */
+SoftNode *scene_current_soft_node(void);
 /* Copies every soft node recorded so far that is not copied yet */
 void scene_capture_soft_nodes(void);
 void soft_node_capture(SoftNode *s); /* gl_atmos.c */
 void soft_nodes_reset(void);         /* gl_atmos.c, with scene_reset */
+/* Cockpit: the frame's atmosphere bands, at the start of each pass */
+void atmos_draw_bands(void);         /* gl_atmos.c */
 
 /* ---- replay (called from Nu_DrawScreen) -------------------------------- */
 /* Pass 0, then the further passes (each set up by cockpit_pass_draw_begin) */

@@ -49,6 +49,7 @@ static int n_passes = 1, cur_pass;
 /* Soft node records not captured yet (offsets of their payloads) */
 static uint32_t soft_pending[SCENE_MAX_NODES];
 static int n_soft_pending;
+static SoftNode *cur_soft; /* the current node's */
 
 typedef void (*PrimDrawFn)(const void *);
 static const PrimDrawFn draw_table[PRIM_COUNT] = {NULL,
@@ -98,6 +99,7 @@ void scene_reset(void)
 	n_passes = 1;
 	cur_pass = 0;
 	n_soft_pending = 0;
+	cur_soft = NULL;
 	soft_nodes_reset();
 }
 
@@ -105,6 +107,7 @@ static void close_current(void)
 {
 	if (cur_node >= 0)
 		nodes[cur_node].end = data_pos;
+	cur_soft = NULL;
 }
 
 static int new_node(uint32_t z)
@@ -202,9 +205,18 @@ void *scene_record(enum PrimOp op, size_t size)
 	memset(payload, 0, padded);
 	data_pos += (uint32_t)padded;
 	nodes[cur_node].end = data_pos;
-	if (op == PRIM_SOFT_NODE && n_soft_pending < SCENE_MAX_NODES)
-		soft_pending[n_soft_pending++] = (uint32_t)((unsigned char *)payload - data);
+	if (op == PRIM_SOFT_NODE)
+	{
+		cur_soft = payload;
+		if (n_soft_pending < SCENE_MAX_NODES)
+			soft_pending[n_soft_pending++] = (uint32_t)((unsigned char *)payload - data);
+	}
 	return payload;
+}
+
+SoftNode *scene_current_soft_node(void)
+{
+	return cur_soft;
 }
 
 /* =========================================================================
@@ -261,6 +273,7 @@ void scene_draw(void)
 				if (passes[p].id == k && passes[p].root >= 0)
 				{
 					cockpit_pass_draw_begin(k);
+					atmos_draw_bands();
 					draw_tree(passes[p].root);
 				}
 		cockpit_pass_draw_end();

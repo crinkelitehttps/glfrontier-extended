@@ -359,5 +359,6 @@
 #define FE2_Lmdlmod_picks                            0xa3f80 /* Lmdlmod_picks */
 #define FE2_Lmdlmod_strings                          0xa5f80 /* Lmdlmod_strings */
 #define FE2_Lcockpit_world                           0xa8f80 /* Lcockpit_world */
+#define FE2_Lcockpit_band                            0xa8fc8 /* Lcockpit_band */
 
 #endif /* FE2_LABELS_H */

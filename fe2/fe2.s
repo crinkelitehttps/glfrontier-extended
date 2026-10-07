@@ -63,6 +63,8 @@ Nu_PutPlanet		equ	$78
 Nu_Draw2DLine		equ	$79
 * Cockpit view: draws the world in more directions (src/gl/gl_cockpit.c)
 Call_CockpitPass	equ	$7a
+* Cockpit view: an atmosphere band's scale and colour (src/gl/gl_atmos.c)
+Nu_AtmosBand		equ	$7b
 
 * don't change. it won't work yet.
 SCR_W			equ	320
@@ -17542,8 +17544,9 @@ L3d6d0_PutPlanetCircle:
 		move.w	(a5)+,d6
 		move.l	a5,-(a7)
 		add.w	204(a3),d6
-		* atmosphere shading colours
-		jsr	L2ec48_AllocDynCol
+		* atmosphere shading colours. Cockpit view: hook, same size as the
+		* jsr it replaced, see Lcockpit_band at the end of the file.
+		jsr	Lcockpit_band
 		move.w	d6,58(a1)
 		movea.l	(a7)+,a5
 		movem.w	(a7)+,d0/d6
@@ -66247,4 +66250,17 @@ lcockpit_objects:
 lcockpit_done:
 		move.w	(a7)+,A6_plr_in_atmosphere(a6)
 		addq.l	#2,a7
+		rts
+
+******************************************************************************
+* Cockpit view: atmosphere bands.
+*
+* Called in place of the colour allocation for each atmosphere haze band
+* (a1: the band's node, 202(a3): its scale, 1.0 = $4000). Tells the host
+* the band's scale and colour so the cockpit can draw it in 3D around the
+* planet instead of as the game's 2D shape, which only fits its own view.
+******************************************************************************
+Lcockpit_band:
+		jsr	L2ec48_AllocDynCol
+		hcall	#Nu_AtmosBand
 		rts

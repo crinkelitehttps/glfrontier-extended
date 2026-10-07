@@ -20,7 +20,10 @@
  *   around each pass): only the directions the head can see this frame,
  *   from a fixed set that covers the whole sphere. Each pass is its own
  *   depth tree in gl_scene.c, drawn turned back by its rotation and kept by
- *   the stencil buffer to its own part of the view.
+ *   the stencil buffer to its own part of the view. The game's 2D shapes
+ *   only fit the view it made them for, so would jog where passes meet:
+ *   in the cockpit, planets are drawn as spheres (gl_planet.c) and their
+ *   atmosphere bands as rings round them (gl_atmos.c) instead.
  *
  *   Only in the front flight view, when the cockpit is enabled and the free
  *   camera is off; everything else keeps the classic letterboxed layout.
@@ -68,8 +71,11 @@ bool cockpit_active(void);
 
 /* Projection for the 3D scene: lens * head rotation */
 mat4 cockpit_world_projection(void);
-/* The same, split: the lens alone and the head rotation (view matrix) */
+/* The same, split: the lens alone and the head rotation (view matrix),
+ * which includes the turn of the pass being drawn */
 void cockpit_world_split(mat4 *lens, mat4 *head_rotation);
+/* The head rotation alone, without the pass's turn */
+mat4 cockpit_head_rotation(void);
 
 /* Projection for 2D drawing in view pixels (x 0..320, y 0..168 down, z 0),
  * cockpit or not, to be used with the GD_VP_VIEW3D viewport */
@@ -85,6 +91,9 @@ void cockpit_draw(void);
 void Call_CockpitPass(void);
 /* True while the game draws a pass other than straight ahead */
 bool cockpit_turned_pass(void);
+/* A direction in the view space of the pass the game is drawing -> view
+ * space (unchanged outside the passes) */
+void cockpit_pass_to_view(const float v[3], float out[3]);
 /* Replay: draw what follows as pass `id`; then back to normal */
 void cockpit_pass_draw_begin(int id);
 void cockpit_pass_draw_end(void);

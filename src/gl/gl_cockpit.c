@@ -85,6 +85,7 @@ static bool passes_built;
 /* This frame's passes in the order the game draws them (ahead last) */
 static int pass_order[COCKPIT_MAX_PASSES];
 static int n_pass_order, pass_step;
+static int drawing_pass = -1; /* the game's, -1 outside the passes */
 static bool turned;
 static int16_t saved_camera[9];
 
@@ -222,6 +223,11 @@ void cockpit_world_split(mat4 *lens, mat4 *head_rotation)
 {
 	*lens = world_lens();
 	*head_rotation = mat4_mul(&head_view, &pass_rot);
+}
+
+mat4 cockpit_head_rotation(void)
+{
+	return head_view;
 }
 
 /* Cockpit geometry: lens with a near plane for things a metre away, head
@@ -537,6 +543,7 @@ void Call_CockpitPass(void)
 			reset_game_list();
 	}
 
+	drawing_pass = -1;
 	/* not in the cockpit: the one pass the game always drew */
 	if (n_pass_order == 0)
 	{
@@ -552,6 +559,7 @@ void Call_CockpitPass(void)
 		turn_camera(cam, k);
 		wrbyte(cam + 92, 0); /* its frame-turned copy (MatrixMulWTF) is stale */
 		turned = k != 0;
+		drawing_pass = k;
 		SetReg(REG_D0, 1);
 		return;
 	}
@@ -565,6 +573,19 @@ void Call_CockpitPass(void)
 bool cockpit_turned_pass(void)
 {
 	return turned;
+}
+
+static mat4 pass_matrix(int id);
+
+void cockpit_pass_to_view(const float v[3], float out[3])
+{
+	if (drawing_pass < 0)
+	{
+		memcpy(out, v, 3 * sizeof(float));
+		return;
+	}
+	mat4 m = pass_matrix(drawing_pass);
+	mat4_xform_dir(&m, v, out);
 }
 
 typedef struct
