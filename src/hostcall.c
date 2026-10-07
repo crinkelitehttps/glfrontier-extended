@@ -138,5 +138,7 @@ HOSTCALL hcalls[] = {
 	[0x79] = Nu_Put2DLine,
 	[0x7a] = Call_CockpitPass,
 	[0x7b] = Nu_AtmosBand,
+	[0x7c] = Nu_ComplexNearCurve,
+	[0x7d] = Call_CockpitBackground,
 };
 const int hcalls_count = sizeof(hcalls) / sizeof(hcalls[0]);

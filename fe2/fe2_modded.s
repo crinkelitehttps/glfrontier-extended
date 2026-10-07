@@ -138,6 +138,10 @@ Nu_Draw2DLine		equ	$79
 Call_CockpitPass	equ	$7a
 * Cockpit view: an atmosphere band's scale and colour (src/gl/gl_atmos.c)
 Nu_AtmosBand		equ	$7b
+* Cockpit view: a curved edge the game makes a line (src/gl/gl_prims.c)
+Nu_ComplexNearCurve	equ	$7c
+* Cockpit view: a pass's background is drawn (src/gl/gl_cockpit.c)
+Call_CockpitBackground	equ	$7d
 
 * don't change. it won't work yet.
 SCR_W			equ	320
@@ -14463,8 +14467,10 @@ L3b710:
 		movem.w	d0-3,2(a0)
 		rts
 
-	l3b730:	tst.b	-186(a6)
-		bmi.s	L3b78e
+	l3b730:
+* Cockpit view: hook, same size as the test it replaced; see
+* Lcockpit_discard at the end of the file.
+		jsr	Lcockpit_discard
 		cmpi.l	#$40,12(a0)
 		blt.s	l3b782
 		movem.l	4(a1),d0-2
@@ -14473,8 +14479,10 @@ L3b710:
 		movem.w	d0-1,-166(a6)
 		clr.w	-168(a6)
 		bra.s	L3b710
-	l3b75c:	tst.b	-186(a6)
-		bmi.s	L3b78e
+	l3b75c:
+* Cockpit view: hook, same size as the test it replaced; see
+* Lcockpit_discard at the end of the file.
+		jsr	Lcockpit_discard
 		movem.l	4(a0),d0-2
 		movem.l	4(a1),d3-5
 		bsr.w	L37d96
@@ -14572,8 +14580,11 @@ L3b810:
 	l3b86e:	move.w	#$ffff,-162(a6)
 		movem.w	d0-1,-166(a6)
 		bra.w	L3b710
-	l3b87e:	tst.b	-186(a6)
-		bmi.w	L3b78e
+	l3b87e:
+* Cockpit view: hook, same size as the test it replaced; see
+* Lcockpit_discard at the end of the file.
+		jsr	Lcockpit_discard
+		nop
 		movem.l	4(a0),d0-2
 		movea.l	-176(a6),a1
 		movem.l	4(a1),d3-5
@@ -14584,8 +14595,11 @@ L3b810:
 
 L3b8a8:
 		movea.l	-176(a6),a1
-		cmpi.l	#$40,12(a1)
-		bge.s	l3b902
+* Cockpit view: hook, same size as the test it replaced (the previous point
+* closer than 64: a straight line instead). See Lcockpit_curve_from.
+		jsr	Lcockpit_curve_from
+		beq.s	l3b902
+		nop
 		addq.l	#2,a5
 		move.b	(a5)+,d0
 		ext.w	d0
@@ -14649,15 +14663,24 @@ L3b8e2_ComplexBezierBit:
 		cmp.b	-152(a6),d5
 		beq.s	l3b94e
 		bsr.w	L3977c_ProjectCoords
-	l3b94e:	moveq	#64,d0
-		cmp.l	12(a0),d0
-		bgt.w	l3b6ea
-		cmp.l	12(a1),d0
-		bgt.w	l3b6ea
-		cmp.l	12(a2),d0
-		bgt.w	l3b6ea
-		cmp.l	12(a3),d0
-		bgt.w	l3b6ea
+	l3b94e:
+* Cockpit view: hook, same size as the four control point tests it replaced
+* (a straight line instead of the curve if any point is closer than 64).
+* See Lcockpit_curve at the end of the file.
+		jsr	Lcockpit_curve
+		bne.w	l3b6ea
+		nop
+		nop
+		nop
+		nop
+		nop
+		nop
+		nop
+		nop
+		nop
+		nop
+		nop
+		nop
 		move.l	a0,-176(a6)
 		clr.w	-168(a6)
 		move.w	#$ffff,-162(a6)
@@ -67123,6 +67146,7 @@ lcockpit_pass:
 lcockpit_nostars:
 		clr.w	A6_plr_in_atmosphere(a6)
 lcockpit_objects:
+		hcall	#Call_CockpitBackground
 		movea.l	A6_big_space(a6),a4
 		jsr	594(a5)
 		movea.l	(a7)+,a3
@@ -67146,4 +67170,89 @@ lcockpit_done:
 Lcockpit_band:
 		jsr	L2ec48_AllocDynCol
 		hcall	#Nu_AtmosBand
+		rts
+
+******************************************************************************
+* Cockpit view: set by the host while the game draws the cockpit's passes
+* (src/gl/gl_cockpit.c)
+******************************************************************************
+Lcockpit_passes:
+		dc.w	0
+
+******************************************************************************
+* Cockpit view: curved edges close to the camera.
+*
+* A curved edge of a complex shape (clouds) with a control point closer
+* than 64 to the camera is drawn as a straight line, as the software
+* renderer can't project it. The cockpit's passes look in other directions
+* than the game's view, so a big cloud overhead is a curve in one pass and
+* lines in the next, and is cut off where they meet. During the passes the
+* host is given the curve as well (Nu_ComplexNearCurve), which it records
+* in place of the line the game goes on to make; the GL renderer cuts it
+* at its own near plane. The game itself still takes the line.
+*
+* Lcockpit_curve: control points a1 (start), a2, a3, a0 (end). Returns Z
+* set for the curve, clear for the line, as the tests it replaced.
+* Lcockpit_curve_from: the previous point a1 of a continued curve; during
+* the passes always Z set, so the points are loaded and Lcockpit_curve
+* decides.
+******************************************************************************
+Lcockpit_curve:
+		moveq	#64,d0
+		cmp.l	12(a0),d0
+		bgt.s	lcockpit_curve_near
+		cmp.l	12(a1),d0
+		bgt.s	lcockpit_curve_near
+		cmp.l	12(a2),d0
+		bgt.s	lcockpit_curve_near
+		cmp.l	12(a3),d0
+		bgt.s	lcockpit_curve_near
+		moveq	#0,d0
+		rts
+lcockpit_curve_near:
+		tst.w	Lcockpit_passes
+		beq.s	lcockpit_curve_line
+		movem.l	d6/a0-3,-(a7)
+		exg	a0,a1
+		exg	a1,a2
+		exg	a2,a3
+		move.w	-160(a6),d6
+		hcall	#Nu_ComplexNearCurve
+		movem.l	(a7)+,d6/a0-3
+lcockpit_curve_line:
+		moveq	#64,d0
+		rts
+
+Lcockpit_curve_from:
+		tst.w	Lcockpit_passes
+		bne.s	lcockpit_curve_from_yes
+		cmpi.l	#$40,12(a1)
+		bge.s	lcockpit_curve_from_yes
+		moveq	#1,d0
+		rts
+lcockpit_curve_from_yes:
+		moveq	#0,d0
+		rts
+
+******************************************************************************
+* Cockpit view: shapes crossing the camera plane.
+*
+* Some complex shapes (clouds) are dropped whole when an edge reaches
+* closer than 64 to the camera (-186(a6) bit 7: L3b78e skips the rest and
+* takes the shape back out of the display list). In the game's view that
+* only happens inside a cloud, but the cockpit's passes look in other
+* directions, where a big cloud overhead crosses their camera plane and
+* one pass drops it while the next draws it. During the passes such shapes
+* go on like any other, their lines cut by the game for its own list; the
+* GL renderer cuts them at its own near plane. Called in place of
+* "tst.b -186(a6) / bmi L3b78e".
+******************************************************************************
+Lcockpit_discard:
+		tst.w	Lcockpit_passes
+		bne.s	lcockpit_discard_keep
+		tst.b	-186(a6)
+		bpl.s	lcockpit_discard_keep
+		addq.l	#4,a7
+		jmp	L3b78e
+lcockpit_discard_keep:
 		rts

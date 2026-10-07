@@ -25,7 +25,11 @@
  * rings round the planet (AtmosBand): a hook in fe2.s (Lcockpit_band) tells
  * Nu_AtmosBand each band's scale and colour as the game builds it,
  * Nu_PutPlanet, which comes after the bands, says which planet they are
- * round, and scene_draw has every pass draw them (atmos_draw_bands).
+ * round, and every pass draws them all (PRIM_ATMOS, draw_atmos) just in
+ * front of its background (the stars and the Milky Way) and behind
+ * everything else, as the game puts them at the back of its scene. A pass
+ * draws them whether or not it has the planet: it can see the haze round
+ * a planet just outside it.
  *
  * The game makes each band by scaling the previous band's outer edge (the
  * planet's horizon arc for the first) by the band's scale about a pivot
@@ -35,7 +39,13 @@
  * just as deep). Band n's outer edge is then (S - 1) * 3072 view pixels
  * beyond the planet's edge, S being the product of the scales so far: in
  * angles, (S - 1) * 3072 / f radians, f being the game's focal length in
- * view pixels.
+ * view pixels. That is for a planet filling half the sky, the only kind
+ * the game's own view makes bands for; but a turned pass with a distant
+ * planet just outside it makes them too, about ten times thinner
+ * (measured: a gas giant 8 degrees across). Kept like that they were huge
+ * rings round distant planets that came and went with the passes, so the
+ * depth is scaled by sin(a)^2, a being the planet's angular radius: the
+ * same close up, a thin rim far away.
  */
 #include <math.h>
 
@@ -69,8 +79,7 @@ static int arena_used;
 /* This frame's bands in 3D (cockpit only). Not every pass the game draws
  * makes them (it only does when the planet's horizon is in that pass's
  * view), so each planet's are kept once, from the first pass that made
- * them, round its centre in view space, and every pass draws them all
- * before anything else (the game puts them at the very back). */
+ * them, round its centre in view space, and every pass draws them all. */
 typedef struct
 {
 	float inner, outer; /* edges: the products of the scales before it and with it */
@@ -146,12 +155,12 @@ void atmos_place_bands(const float centre[3], float radius)
 	scale_so_far = 1.0f;
 }
 
-void atmos_draw_bands(void)
+void draw_atmos(const void *payload)
 {
+	(void)payload;
 	if (!cockpit_active())
 		return;
 	double f = FILL2D_VIEW_H * 0.5 / tan(CLASSIC_FOV * GLM_PI / 360.0);
-	double k = PIVOT_MAX / f;
 	for (int i = 0; i < n_bands; i++)
 	{
 		const AtmosBand *b = &bands[i];
@@ -163,6 +172,7 @@ void atmos_draw_bands(void)
 		if (dist <= 0.0)
 			continue;
 		double a = asin(fmin((double)p->radius / dist, 1.0));
+		double s = sin(a), k = PIVOT_MAX / f * s * s;
 		double outer = a + (b->outer - 1.0) * k;
 		/* the first band reaches in to the planet's edge: no inner edge, the
 		 * planet is drawn over it */
@@ -212,7 +222,7 @@ void draw_soft_node(const void *payload)
 	const SoftNode *s = payload;
 	if (s->band < 0)
 		return;
-	/* drawn in 3D instead (atmos_draw_bands) */
+	/* drawn in 3D instead (draw_atmos) */
 	if (s->shell && ((const AtmosBand *)s->shell)->planet >= 0 && cockpit_active())
 		return;
 

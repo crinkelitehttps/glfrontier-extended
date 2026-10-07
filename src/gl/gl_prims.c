@@ -587,12 +587,17 @@ static bool complex_begin_record(void)
 
 void Nu_PutComplexStart(void) {}
 
+/* Set by Nu_ComplexNearCurve: the line the game makes in place of the
+ * curve just recorded comes next, and is dropped */
+static bool skip_line;
+
 void Nu_ComplexStart(void)
 {
 	if (!scene_active())
 		return;
 	complex_rec.pending = true;
 	complex_rec.col444 = GetReg(REG_D6);
+	skip_line = false;
 }
 
 void Nu_ComplexSNext(void)
@@ -619,6 +624,11 @@ void Nu_ComplexSNext(void)
  * to A0 in the middle of an outline; there A1 is not the outline start. */
 void Nu_ComplexSBegin(void)
 {
+	if (skip_line)
+	{
+		skip_line = false;
+		return;
+	}
 	if (!complex_begin_record())
 		return;
 	u32 start = (u32)STMemory_ReadLong(GetReg(REG_A6) + A6_COMPLEX_OUTLINE_START);
@@ -645,6 +655,18 @@ void Nu_ComplexBezier(void)
 	v[1] = m68k_vertex(GetReg(REG_A1) + 4);
 	v[2] = m68k_vertex(GetReg(REG_A2) + 4);
 	v[3] = m68k_vertex(GetReg(REG_A3) + 4);
+}
+
+/* Cockpit passes: a curved edge the game is about to make a straight line
+ * because a control point is close to its camera (Lcockpit_curve in fe2.s).
+ * Recorded as the curve, which the replay cuts at the near plane: the
+ * passes look in other directions than the game's view, and a big cloud
+ * that is a curve in one pass and a line in the next is cut off where
+ * they meet. */
+void Nu_ComplexNearCurve(void)
+{
+	Nu_ComplexBezier();
+	skip_line = scene_active();
 }
 
 void Nu_ComplexEnd(void)

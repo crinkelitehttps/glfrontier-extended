@@ -89,6 +89,8 @@ void cockpit_draw(void);
  * returns d0 = 1 if the game is to draw a pass with the camera at a3. */
 #define COCKPIT_MAX_PASSES 32
 void Call_CockpitPass(void);
+/* Host call: the game has drawn the background of the pass (Lcockpit_world) */
+void Call_CockpitBackground(void);
 /* True while the game draws a pass other than straight ahead */
 bool cockpit_turned_pass(void);
 /* A direction in the view space of the pass the game is drawing -> view

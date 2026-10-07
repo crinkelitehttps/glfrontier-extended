@@ -105,5 +105,6 @@ void Nu_PutBlob(void);
 void Nu_PutPlanet(void);
 void Nu_Put2DLine(void);
 void Nu_AtmosBand(void);
+void Nu_ComplexNearCurve(void);
 
 #endif /* RENDERER_H */

@@ -359,6 +359,10 @@
 #define FE2_Lmdlmod_picks                            0xa3f80 /* Lmdlmod_picks */
 #define FE2_Lmdlmod_strings                          0xa5f80 /* Lmdlmod_strings */
 #define FE2_Lcockpit_world                           0xa8f80 /* Lcockpit_world */
-#define FE2_Lcockpit_band                            0xa8fc8 /* Lcockpit_band */
+#define FE2_Lcockpit_band                            0xa8fcc /* Lcockpit_band */
+#define FE2_Lcockpit_passes                          0xa8fd8 /* Lcockpit_passes */
+#define FE2_Lcockpit_curve                           0xa8fda /* Lcockpit_curve */
+#define FE2_Lcockpit_curve_from                      0xa901a /* Lcockpit_curve_from */
+#define FE2_Lcockpit_discard                         0xa9034 /* Lcockpit_discard */
 
 #endif /* FE2_LABELS_H */

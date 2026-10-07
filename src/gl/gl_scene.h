@@ -52,7 +52,8 @@
 	X(COMPLEX_INNER, draw_complex_inner)                                                                     \
 	X(COMPLEX_END, draw_complex_end)                                                                         \
 	X(PLANET, draw_planet)                                                                                   \
-	X(SOFT_NODE, draw_soft_node)
+	X(SOFT_NODE, draw_soft_node)                                                                             \
+	X(ATMOS, draw_atmos)
 
 enum PrimOp
 {
@@ -116,6 +117,10 @@ void scene_lock_node(bool lock);
  * the records then stay in pass 0. */
 bool scene_begin_pass(int id);
 void scene_end_pass(void);
+/* A node with just a record of type `op`, in front of everything the pass
+ * has so far (its background) and behind all that comes after. Records
+ * after it are dropped until the next scene_insert_node. */
+void scene_insert_after_background(enum PrimOp op);
 
 /* PRIM_SOFT_NODE payload: a node of the game's software depth tree. The
  * game fills it in after the GL node is made, and reuses that memory for
@@ -132,8 +137,6 @@ SoftNode *scene_current_soft_node(void);
 void scene_capture_soft_nodes(void);
 void soft_node_capture(SoftNode *s); /* gl_atmos.c */
 void soft_nodes_reset(void);         /* gl_atmos.c, with scene_reset */
-/* Cockpit: the frame's atmosphere bands, at the start of each pass */
-void atmos_draw_bands(void);         /* gl_atmos.c */
 
 /* ---- replay (called from Nu_DrawScreen) -------------------------------- */
 /* Pass 0, then the further passes (each set up by cockpit_pass_draw_begin) */

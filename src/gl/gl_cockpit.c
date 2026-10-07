@@ -532,6 +532,9 @@ void Call_CockpitPass(void)
 		n_pass_order = 0;
 		if (active && scene_active())
 			choose_passes();
+		/* the game draws some things differently for the passes
+		 * (Lcockpit_passes in fe2.s) */
+		wrword(FE2_Lcockpit_passes, n_pass_order > 0);
 		for (int i = 0; i < 9; i++)
 			saved_camera[i] = rdword(cam + 2 * i);
 	}
@@ -567,12 +570,20 @@ void Call_CockpitPass(void)
 		wrword(cam + 2 * i, saved_camera[i]);
 	wrbyte(cam + 92, 0);
 	turned = false;
+	wrword(FE2_Lcockpit_passes, 0);
 	SetReg(REG_D0, 0);
 }
 
 bool cockpit_turned_pass(void)
 {
 	return turned;
+}
+
+void Call_CockpitBackground(void)
+{
+	/* the atmosphere bands go just in front of the stars (gl_atmos.c) */
+	if (drawing_pass >= 0)
+		scene_insert_after_background(PRIM_ATMOS);
 }
 
 static mat4 pass_matrix(int id);

@@ -40,10 +40,11 @@ static bool node_locked;
  * own depth tree. */
 typedef struct
 {
-	int root; /* -1 until the pass's first node */
-	int id;   /* the cockpit's id for it */
+	int root;      /* -1 until the pass's first node */
+	int id;        /* the cockpit's id for it */
+	uint32_t zmin; /* its nearest node so far (root >= 0) */
 } Pass;
-static Pass passes[SCENE_MAX_PASSES] = {{-1, -1}};
+static Pass passes[SCENE_MAX_PASSES] = {{-1, -1, 0}};
 static int n_passes = 1, cur_pass;
 
 /* Soft node records not captured yet (offsets of their payloads) */
@@ -160,8 +161,11 @@ bool scene_insert_node(uint32_t z)
 	if (passes[cur_pass].root < 0) /* the pass's first node is its root */
 	{
 		passes[cur_pass].root = n;
+		passes[cur_pass].zmin = z;
 		return true;
 	}
+	if (z < passes[cur_pass].zmin)
+		passes[cur_pass].zmin = z;
 
 	/* Iterative BST insert: larger z to `more`, ties to `less` */
 	int i = passes[cur_pass].root;
@@ -175,6 +179,17 @@ bool scene_insert_node(uint32_t z)
 		}
 		i = *next;
 	}
+}
+
+void scene_insert_after_background(enum PrimOp op)
+{
+	const Pass *p = &passes[cur_pass];
+	uint32_t z = p->root < 0 ? UINT32_MAX : p->zmin > 0 ? p->zmin - 1 : 0;
+	if (!scene_insert_node(z))
+		return;
+	scene_record(op, 0);
+	close_current();
+	cur_node = -1;
 }
 
 void scene_lock_node(bool lock)
@@ -273,7 +288,6 @@ void scene_draw(void)
 				if (passes[p].id == k && passes[p].root >= 0)
 				{
 					cockpit_pass_draw_begin(k);
-					atmos_draw_bands();
 					draw_tree(passes[p].root);
 				}
 		cockpit_pass_draw_end();
