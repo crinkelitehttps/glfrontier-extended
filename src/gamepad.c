@@ -30,7 +30,7 @@ static const char DEFAULT_CFG[] =
 	"# Shift layers: a control bound to `shift1` or `shift2` is held to switch\n"
 	"# key bindings to the ones prefixed with that shift (and off the\n"
 	"# unprefixed ones). Holding both reaches neither. The layer counts when a\n"
-	"# control is pressed. Axis bindings (steer, look, strafe-x/y) act\n"
+	"# control is pressed. Axis bindings (steer, roll, yaw, look, strafe) act\n"
 	"# whatever the shifts, unless the axis has one prefixed with the shift\n"
 	"# being held.\n"
 	"#\n"
@@ -45,6 +45,8 @@ static const char DEFAULT_CFG[] =
 	"# Actions:\n"
 	"#   steer-x, steer-y [invert]  the ship's steering (full axes only):\n"
 	"#                              x turns (rolls with Elite controls), y pitches\n"
+	"#   roll, yaw [invert]         steer-x, but rolling / yawing whatever the\n"
+	"#                              game's Elite controls option (full axes)\n"
 	"#   look-x, look-y [invert]    look around in the cockpit (springs back)\n"
 	"#   strafe-x, strafe-y [invert] sideways / vertical thrust (full axes;\n"
 	"#                              x right +, y up +, so lefty wants invert)\n"
@@ -72,40 +74,36 @@ static const char DEFAULT_CFG[] =
 	"look-pitch 60\n"
 	"\n"
 	"# ---- Flying\n"
-	"leftx          steer-x\n"
-	"lefty          steer-y invert      # push forward to dive (drop invert to climb)\n"
-	"rightx         look-x              # look around (springs back)\n"
-	"righty         look-y\n"
-	"righttrigger   key return          # throttle up (hold)\n"
-	"lefttrigger    key rshift          # throttle down (hold)\n"
-	"a              key space           # fire\n"
+	"leftx          strafe-x            # thrust left / right\n"
+	"lefty          strafe-y invert     # thrust up / down\n"
+	"rightx         roll\n"
+	"righty         steer-y invert      # pitch: push forward to dive (drop invert to climb)\n"
+	"shift2 rightx  yaw                 # right shoulder held: yaw instead of roll\n"
+	"leftshoulder   key return          # forward: set speed up, or main thrust (hold)\n"
+	"lefttrigger    key rshift          # back: set speed down, or retro thrust (hold)\n"
+	"righttrigger   key space           # fire\n"
 	"b              key f1              # flight view: front, rear, turrets, external\n"
 	"y              cockpit             # cockpit view on / off\n"
 	"start          key escape          # pause\n"
-	"back           recenter            # head tracking: this pose is straight ahead\n"
-	"rightstick     recenter\n"
-	"dpleft         strafe left         # sideways / vertical thrust (hold)\n"
-	"dpright        strafe right\n"
-	"dpup           strafe up\n"
-	"dpdown         strafe down\n"
-	"x              key =               # zoom in (maps, external view)\n"
-	"leftstick      key -               # zoom out\n"
+	"rightstick     recenter            # head tracking: this pose is straight ahead\n"
+	"dpup           key =               # zoom in (maps, external view)\n"
+	"dpdown         key -               # zoom out\n"
 	"\n"
-	"# ---- Left shoulder held: the console's function keys, laid out like\n"
-	"# the panel (F1-F4 on the left, F6-F10 on the right)\n"
-	"leftshoulder   shift1\n"
+	"# ---- Back held: the console's function keys, laid out like the panel\n"
+	"# (F1-F4 on the left, F6-F10 on the right)\n"
+	"back           shift1\n"
 	"shift1 dpleft  key f1\n"
 	"shift1 dpup    key f2\n"
 	"shift1 dpright key f3\n"
 	"shift1 dpdown  key f4\n"
-	"shift1 back    key f5\n"
+	"shift1 leftstick key f5\n"
 	"shift1 x       key f6\n"
 	"shift1 y       key f7\n"
 	"shift1 b       key f8\n"
 	"shift1 a       key f9\n"
 	"shift1 start   key f10\n"
 	"\n"
-	"# ---- Right shoulder held: time acceleration\n"
+	"# ---- Right shoulder held: yaw (above) and time acceleration\n"
 	"rightshoulder  shift2\n"
 	"shift2 dpdown  key shift+f1        # normal time\n"
 	"shift2 dpleft  key shift+f2\n"
@@ -133,6 +131,8 @@ typedef enum
 {
 	ACT_STEER_X,
 	ACT_STEER_Y,
+	ACT_ROLL,
+	ACT_YAW,
 	ACT_LOOK_X,
 	ACT_LOOK_Y,
 	ACT_STRAFE_X,
@@ -164,7 +164,7 @@ typedef struct
 	int n_keys;
 	int step;  /* cycle: the next key */
 	int layer; /* key, cycle, recenter, cockpit, steer, look, strafe: shift layer (0 none, 1, 2); shift: which */
-	int axis_shadowed; /* steer / look / strafe-x / strafe-y without a layer: bit n set if shift n has its own binding */
+	int axis_shadowed; /* axis actions without a layer: bit n set if shift n has its own binding */
 
 	bool was_down;  /* the control, last update */
 	bool held;      /* key: sent down */
@@ -181,6 +181,7 @@ static float look_yaw = 100.0f, look_pitch = 60.0f;
 static SDL_GameController *pad;
 static float look[2];
 static bool steering; /* wrote steering last update */
+static int elite_saved = -1; /* the game's Elite controls option while roll / yaw force it, else -1 */
 
 /* ---- parsing ------------------------------------------------------------ */
 static bool parse_control(const char *name, Control *c)
@@ -276,8 +277,8 @@ static int split(char *line, char **words, int max)
 
 static bool is_axis_action(Action a)
 {
-	return a == ACT_STEER_X || a == ACT_STEER_Y || a == ACT_LOOK_X || a == ACT_LOOK_Y || a == ACT_STRAFE_X ||
-		   a == ACT_STRAFE_Y;
+	return a == ACT_STEER_X || a == ACT_STEER_Y || a == ACT_ROLL || a == ACT_YAW || a == ACT_LOOK_X ||
+		   a == ACT_LOOK_Y || a == ACT_STRAFE_X || a == ACT_STRAFE_Y;
 }
 
 static bool parse_line(char *line, const char *source, int line_no)
@@ -322,11 +323,13 @@ static bool parse_line(char *line, const char *source, int line_no)
 	int args = i + 2;
 	bool full_axis = b.control.source == SRC_AXIS && b.control.half == 0;
 
-	if (!strcmp(act, "steer-x") || !strcmp(act, "steer-y") || !strcmp(act, "look-x") || !strcmp(act, "look-y") ||
-		!strcmp(act, "strafe-x") || !strcmp(act, "strafe-y"))
+	if (!strcmp(act, "steer-x") || !strcmp(act, "steer-y") || !strcmp(act, "roll") || !strcmp(act, "yaw") ||
+		!strcmp(act, "look-x") || !strcmp(act, "look-y") || !strcmp(act, "strafe-x") || !strcmp(act, "strafe-y"))
 	{
 		b.action = !strcmp(act, "steer-x")	  ? ACT_STEER_X
 				   : !strcmp(act, "steer-y")  ? ACT_STEER_Y
+				   : !strcmp(act, "roll")	  ? ACT_ROLL
+				   : !strcmp(act, "yaw")	  ? ACT_YAW
 				   : !strcmp(act, "look-x")	  ? ACT_LOOK_X
 				   : !strcmp(act, "look-y")	  ? ACT_LOOK_Y
 				   : !strcmp(act, "strafe-x") ? ACT_STRAFE_X
@@ -612,6 +615,26 @@ static int current_layer(void)
 	return s[1] ? 1 : s[2] ? 2 : 0;
 }
 
+/* The game has one sideways steering input, which rolls or yaws as its
+ * Elite controls option says (rolling also yaws close to a planet). While
+ * a roll or yaw binding steers, the option is set to match and put back
+ * afterwards. mode: 0 leave it, 1 roll, 2 yaw. */
+static void force_elite_controls(int mode)
+{
+	u32 opt = GAME_A6 + A6_OPT_ELITE_CONTROLS;
+	if (mode && game_player_ship())
+	{
+		if (elite_saved < 0)
+			elite_saved = rdbyte(opt) & 0xff;
+		wrbyte(opt, mode == 1 ? 0xff : 0);
+	}
+	else if (elite_saved >= 0)
+	{
+		wrbyte(opt, elite_saved);
+		elite_saved = -1;
+	}
+}
+
 static void write_steering(float x, float y)
 {
 	bool on = x != 0.0f || y != 0.0f;
@@ -626,12 +649,13 @@ static void write_steering(float x, float y)
 
 void gamepad_update(void)
 {
-	float steer[2] = {0, 0}, strafe[2] = {0, 0};
+	float steer[2] = {0, 0}, strafe[2] = {0, 0}, roll = 0, yaw = 0;
 	look[0] = look[1] = 0;
 	if (!pad)
 	{
 		release_all();
 		write_steering(0, 0);
+		force_elite_controls(0);
 		strafe_set_pad(0, 0);
 		return;
 	}
@@ -655,6 +679,12 @@ void gamepad_update(void)
 				break;
 			case ACT_STEER_Y:
 				steer[1] += v;
+				break;
+			case ACT_ROLL:
+				roll += v;
+				break;
+			case ACT_YAW:
+				yaw += v;
 				break;
 			case ACT_LOOK_X:
 				look[0] += v;
@@ -712,6 +742,8 @@ void gamepad_update(void)
 		}
 	}
 
+	steer[0] += roll + yaw;
+	force_elite_controls(yaw != 0.0f ? 2 : roll != 0.0f ? 1 : 0);
 	for (int i = 0; i < 2; i++)
 	{
 		steer[i] = fmaxf(-1.0f, fminf(1.0f, steer[i]));
