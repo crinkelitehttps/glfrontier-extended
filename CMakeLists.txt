@@ -367,9 +367,13 @@ elseif(MSVC)
 elseif(CMAKE_C_COMPILER_ID STREQUAL "Intel")
     target_link_libraries(${PROJECT_NAME} ${LIBRARIES} -static-intel -lpthread)
 else()
-    # GCC / Clang: fully static executable
+    # GCC / Clang: fully static executable on Windows. Elsewhere libc stays
+    # dynamic: a static glibc binary crashes when SDL dlopens the GL driver.
     target_link_libraries(${PROJECT_NAME} ${LIBRARIES}
-        -static-libgcc -static-libstdc++ -static -pthread)
+        -static-libgcc -static-libstdc++ -pthread)
+    if(WIN32)
+        target_link_options(${PROJECT_NAME} PRIVATE -static)
+    endif()
     if(WIN32 AND NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
         target_link_options(${PROJECT_NAME} PRIVATE -mwindows) # no console window
     endif()

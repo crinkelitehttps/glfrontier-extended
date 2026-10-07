@@ -19866,12 +19866,12 @@ static int _bisect_forward_serialno(OggVorbis_File *vf,
     if(vf->serialnos)_ogg_free(vf->serialnos);
     if(vf->dataoffsets)_ogg_free(vf->dataoffsets);
 
-    vf->offsets=(long long *)_ogg_malloc((vf->links+1)*sizeof(*vf->offsets));
+    vf->offsets=(ogg_int64_t *)_ogg_malloc((vf->links+1)*sizeof(*vf->offsets));
     vf->vi=(vorbis_info *)_ogg_realloc(vf->vi,vf->links*sizeof(*vf->vi));
     vf->vc=(vorbis_comment *)_ogg_realloc(vf->vc,vf->links*sizeof(*vf->vc));
     vf->serialnos=(long *)_ogg_malloc(vf->links*sizeof(*vf->serialnos));
-    vf->dataoffsets=(long long *)_ogg_malloc(vf->links*sizeof(*vf->dataoffsets));
-    vf->pcmlengths=(long long *)_ogg_malloc(vf->links*2*sizeof(*vf->pcmlengths));
+    vf->dataoffsets=(ogg_int64_t *)_ogg_malloc(vf->links*sizeof(*vf->dataoffsets));
+    vf->pcmlengths=(ogg_int64_t *)_ogg_malloc(vf->links*2*sizeof(*vf->pcmlengths));
 
     vf->offsets[m+1]=end;
     vf->offsets[m]=begin;
@@ -20282,7 +20282,7 @@ static int _ov_open1(void *f,OggVorbis_File *vf,const char *initial,
     memcpy(vf->serialnos+2,serialno_list,serialno_list_size*sizeof(*vf->serialnos));
 
     vf->offsets=(ogg_int64_t *)_ogg_calloc(1,sizeof(*vf->offsets));
-    vf->dataoffsets=(long long *)_ogg_calloc(1,sizeof(*vf->dataoffsets));
+    vf->dataoffsets=(ogg_int64_t *)_ogg_calloc(1,sizeof(*vf->dataoffsets));
     vf->offsets[0]=0;
     vf->dataoffsets[0]=vf->offset;
 
