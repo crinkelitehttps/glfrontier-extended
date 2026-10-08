@@ -330,8 +330,10 @@ ${FE2_SHIPS_TABLE}    {0, 0, 0},
     message(STATUS "Custom ship models compiled in: ${FE2_SHIP_I} file(s) from tools/fe2ShipBuilder/custom_ships")
 endif()
 
-# Windows: the exe's icon (src/glfrontier.ico, from tools/icon/make_icon.py)
+# Windows: the exe's icon (src/glfrontier.ico, from tools/icon/make_icon.py),
+# and Winsock for head tracking (src/headtrack.c)
 if(WIN32)
+    list(APPEND LIBRARIES ws2_32)
     enable_language(RC)
     list(APPEND PROJECT_SOURCES "${CMAKE_CURRENT_LIST_DIR}/src/glfrontier.rc")
 endif()
