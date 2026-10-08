@@ -10,7 +10,7 @@
  *   direction through the game's original projection. In the cockpit those
  *   pixels are put back on that direction, far away and turning with the
  *   world, so they stay on what they mark (a collimated display). The
- *   control panel (screen rows 168..200) is a texture on the dashboard,
+ *   control panel (screen rows 168..200) is a texture on a panel below,
  *   which also moves with the head's position. Mouse positions are mapped
  *   back through the same surfaces.
  *
@@ -81,7 +81,7 @@ mat4 cockpit_head_rotation(void);
  * cockpit or not, to be used with the GD_VP_VIEW3D viewport */
 mat4 cockpit_view_pixel_projection(void);
 
-/* Queues the HUD plane, the cockpit frame and the panel */
+/* Queues the HUD plane and the panel */
 void cockpit_draw(void);
 
 /* Turned passes (see HOW IT WORKS); ids 0 .. COCKPIT_MAX_PASSES-1, 0 is

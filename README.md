@@ -18,7 +18,7 @@ A fork of GLFrontier (OpenGL Frontier Elite 2) that modernizes the build system,
 
 ### Cockpit view, head tracking and gamepads
 
-In the front flight view the game is shown from a seat in the ship: the world fills the window, the game's HUD is drawn at infinity so it stays on what it marks when you look around, and the control panel sits on the dashboard (it still takes mouse clicks). Ctrl-K or the SETTINGS page turns it off and sets the field of view. Other views and screens keep the classic layout.
+In the front flight view the game is shown from a seat in the ship: the world fills the window, the game's HUD is drawn at infinity so it stays on what it marks when you look around, and the control panel and scanner float below the view (they still take mouse clicks). Ctrl-K or the SETTINGS page turns it off and sets the field of view. Other views and screens keep the classic layout.
 
 * **Head tracking:** OpenTrack with the output set to "UDP over network", host 127.0.0.1, port 4242. Rotation turns the view, position moves your head in the cockpit. Recentre with Ctrl-C (or OpenTrack's own centre key).
 * **Gamepads:** any controller SDL knows (buttons named by their Xbox positions). The defaults:

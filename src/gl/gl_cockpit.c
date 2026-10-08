@@ -3,8 +3,8 @@
  *
  * Spaces:
  *   view space   the game's camera space as gl_scene records it: x right,
- *                y up, looking down -z. The cockpit is modelled in it too,
- *                in metres, with the eye at the origin.
+ *                y up, looking down -z. The control panel is placed in it
+ *                too, in metres, with the eye at the origin.
  *   eye space    view space turned by the head: V = head_view maps view
  *                space to eye space, Q (its transpose) back.
  *   view pixels  the game's 2D drawing over its 3D view: x 0..320, y 0..168
@@ -44,16 +44,14 @@ int headtrack_port = HEADTRACK_DEFAULT_PORT;
 #define COCKPIT_NEAR 0.02f
 #define COCKPIT_FAR  50.0f
 
-/* Control panel on the dashboard: 320x32 screen pixels at the ST's 1.2
+/* Control panel below the view: 320x32 screen pixels at the ST's 1.2
  * pixel aspect, facing the eye, centred PANEL_DOWN degrees below ahead so
- * its bezel starts just under the bottom of the classic view (18.25). */
+ * it starts just under the bottom of the classic view (18.25). */
 #define PANEL_W     0.76f
 #define PANEL_H     (PANEL_W * 32.0f / 320.0f * 1.2f)
 #define PANEL_DIST  0.62f
 #define PANEL_DOWN  24.5f
-#define BEZEL       0.025f
 #define PANEL_ROW0  168 /* first screen row of the panel */
-#define DASH_HALF_W 0.8f
 
 static bool active;
 static float aspect = 16.0f / 9.0f;
@@ -348,71 +346,6 @@ static void queue_screen_quad(const mat4 *m, const float corners[4][3], int y0, 
 	q->upload = upload;
 }
 
-static void quad(const float a[3], const float b[3], const float c[3], const float d[3], float r, float g, float bl)
-{
-	gd_color3f(r, g, bl);
-	gd_quad(a, b, c, d);
-}
-
-/* The frame: canopy pillars and top bar, the dashboard and the bezel round
- * the panel. Flat colours; only the shapes and parallax matter. */
-static void draw_frame(void)
-{
-	/* canopy pillars, about 40 degrees out, clear of the classic view (32);
-	 * their feet go behind the dashboard */
-	for (int side = -1; side <= 1; side += 2)
-	{
-		float s = (float)side;
-		float a[3] = {s * 0.58f, -0.40f, -0.66f}, b[3] = {s * 0.62f, -0.40f, -0.66f};
-		float c[3] = {s * 0.60f, 0.42f, -0.74f}, d[3] = {s * 0.56f, 0.42f, -0.74f};
-		quad(a, b, c, d, 0.20f, 0.21f, 0.24f);
-	}
-	/* top bar, just above the classic view's top edge (18) */
-	{
-		float a[3] = {-0.60f, 0.36f, -0.74f}, b[3] = {0.60f, 0.36f, -0.74f};
-		float c[3] = {0.60f, 0.40f, -0.74f}, d[3] = {-0.60f, 0.40f, -0.74f};
-		quad(a, b, c, d, 0.20f, 0.21f, 0.24f);
-	}
-
-	/* dashboard: the panel's plane, wide and down out of sight */
-	float down[3], right[3] = {1, 0, 0};
-	sub3(panel[2], panel[0], down);
-	float len = sqrtf(dot3(down, down));
-	for (int i = 0; i < 3; i++)
-		down[i] /= len;
-	float top[3], dash[4][3];
-	for (int i = 0; i < 3; i++)
-		top[i] = (panel[0][i] + panel[1][i]) * 0.5f - down[i] * BEZEL;
-	for (int i = 0; i < 3; i++)
-	{
-		dash[0][i] = top[i] - right[i] * DASH_HALF_W;
-		dash[1][i] = top[i] + right[i] * DASH_HALF_W;
-		dash[2][i] = dash[1][i] + down[i] * 1.5f;
-		dash[3][i] = dash[0][i] + down[i] * 1.5f;
-	}
-	quad(dash[0], dash[1], dash[2], dash[3], 0.12f, 0.13f, 0.15f);
-	/* its ends wrap back round the seat */
-	for (int side = -1; side <= 1; side += 2)
-	{
-		const float *edge_top = dash[side < 0 ? 0 : 1], *edge_bottom = dash[side < 0 ? 3 : 2];
-		float back_top[3] = {(float)side * 1.1f, edge_top[1], 0.4f};
-		float back_bottom[3] = {back_top[0], edge_bottom[1], 0.4f};
-		quad(edge_top, back_top, back_bottom, edge_bottom, 0.10f, 0.11f, 0.13f);
-	}
-
-	/* bezel */
-	float bz[4][3];
-	for (int i = 0; i < 3; i++)
-	{
-		float o = BEZEL;
-		bz[0][i] = panel[0][i] - right[i] * o - down[i] * o;
-		bz[1][i] = panel[1][i] + right[i] * o - down[i] * o;
-		bz[2][i] = panel[3][i] + right[i] * o + down[i] * o;
-		bz[3][i] = panel[2][i] - right[i] * o + down[i] * o;
-	}
-	quad(bz[0], bz[1], bz[2], bz[3], 0.06f, 0.06f, 0.07f);
-}
-
 void cockpit_draw(void)
 {
 	if (!active)
@@ -424,13 +357,12 @@ void cockpit_draw(void)
 	gd_set_viewport(GD_VP_WINDOW);
 	queue_screen_quad(&hud, view_corners, 0, PANEL_ROW0, true, true);
 
-	/* the cockpit itself */
+	/* the control panel (with the scanner), on its own in front of the eye */
 	mat4 cp = cockpit_projection();
 	gd_set_projection(&cp);
 	gd_push();
 	gd_identity();
 	gd_set_cull(false);
-	draw_frame();
 	queue_screen_quad(&cp, (const float(*)[3])panel, PANEL_ROW0, GL_SCREEN_H, false, false);
 	gd_pop();
 }
