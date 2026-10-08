@@ -21,7 +21,16 @@ A fork of GLFrontier (OpenGL Frontier Elite 2) that modernizes the build system,
 In the front flight view the game is shown from a seat in the ship: the world fills the window, the game's HUD is drawn at infinity so it stays on what it marks when you look around, and the control panel sits on the dashboard (it still takes mouse clicks). Ctrl-K or the SETTINGS page turns it off and sets the field of view. Other views and screens keep the classic layout.
 
 * **Head tracking:** OpenTrack with the output set to "UDP over network", host 127.0.0.1, port 4242. Rotation turns the view, position moves your head in the cockpit. Recentre with Ctrl-C (or OpenTrack's own centre key).
-* **Gamepads:** any controller SDL knows. Left stick steers (analog), triggers are throttle, A fires, right stick looks around. Holding LB puts the console's F1-F10 on the D-pad and face buttons, RB the time acceleration. The bindings are in `gamepad.cfg` beside the saves, written on the first run with the format explained at the top; edit it to change them.
+* **Gamepads:** any controller SDL knows (buttons named by their Xbox positions). The defaults:
+  * Left stick - thrust sideways and up / down (strafing).
+  * Right stick - pitch and roll; hold RB to yaw instead of roll.
+  * LB / LT - speed up / down (or main / retro thrust when held, with the engines off).
+  * RT - fire. B - flight view (front, rear, turrets, external). Y - cockpit view on / off.
+  * D-pad up / down - zoom in / out. Start - pause. Right stick click - recentre head tracking.
+  * Hold Back for the console's F1-F10: F1-F4 on the D-pad (left, up, right, down), F5 on left stick click, F6-F9 on X, Y, B, A, F10 on Start.
+  * Hold RB for time acceleration: D-pad down is normal time, left / up / right faster, Y fastest.
+
+  The bindings are in `gamepad.cfg` beside the saves, written on the first run with the format explained at the top; edit it to change them (delete it to get the defaults back).
 
 ### Free camera
 
